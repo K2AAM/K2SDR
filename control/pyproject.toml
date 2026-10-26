@@ -6,13 +6,22 @@ description = "K2AAM WebSDR control service"
 requires-python = ">=3.13"
 license = { text = "All rights reserved (license pending)" }
 dependencies = [
-    "pydantic==2.14.1",  # exact: generated schema output depends on it,
+    "pydantic==2.14.1",  # exact: generated schema output depends on it
+    "fastapi==0.162.0",
+    "uvicorn==0.54.0",
+    "websockets==17.3",  # uvicorn's WebSocket implementation
+    "argon2-cffi==25.1.0",
+    "python-multipart==0.0.32",
 ]
+
+[project.scripts]
+k2websdr-server = "k2websdr.server:main"
 
 [dependency-groups]
 dev = [
     "pytest==9.1.1",
     "numpy>=2,<3",  # tests only: spectral checks on fixtures
+    "httpx2==2.16.0",  # tests only: Starlette TestClient transport
 ]
 
 [build-system]

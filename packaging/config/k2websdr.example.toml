@@ -1,0 +1,18 @@
+# K2AAM WebSDR — example configuration (installed packaging arrives in M6).
+[server]
+host = "127.0.0.1"           # loopback only until admin MFA exists; anything else is refused
+port = 8075                  # OpenWebRX+ uses 8073
+state_dir = "/var/lib/k2aam-websdr"
+runtime_dir = "/run/k2aam-websdr"
+worker_bin = "/usr/lib/k2aam-websdr/ksdr-worker"
+ledger = "/usr/share/k2aam-websdr/ledger/modes.v1.json"
+# trusted_proxies = ["127.0.0.1/32"]   # only if a reverse proxy on this host forwards to us
+# cookie_secure = true                 # once served over HTTPS
+session_hours = 12
+
+# M0 receivers are replays of SigMF recordings. Hardware receivers arrive in M1.
+# [[receivers]]
+# id = "replay-0"
+# label = "Replay"
+# recording = "/usr/share/k2aam-websdr/fixtures/two_tone_ci16.sigmf-meta"
+# takeover_policy = "deny"

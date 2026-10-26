@@ -1,0 +1,21 @@
+# Local development: replay fixtures, state under ./.dev-state, loopback only.
+#   make worker && make run-dev   ->  http://127.0.0.1:8075
+[server]
+host = "127.0.0.1"
+port = 8075
+state_dir = "../.dev-state/state"
+runtime_dir = "../.dev-state/run"
+worker_bin = "../build/worker/ksdr-worker"
+ledger = "../ledger/modes.v1.json"
+build = "dev"
+
+[[receivers]]
+id = "replay-two-tone"
+label = "Replay: two tones @ 7.074 MHz"
+recording = "../fixtures/iq/two_tone_ci16.sigmf-meta"
+
+[[receivers]]
+id = "replay-gap"
+label = "Replay: gaps @ 14.074 MHz"
+recording = "../fixtures/iq/gap_ci16.sigmf-meta"
+takeover_policy = "preempt_with_notice"
