@@ -52,6 +52,15 @@ repository at this time.
 
 The worker (`worker/`) links only the C/C++ standard libraries in M0; no SDR or DSP libraries yet.
 
+## M1 hardware measurement tools (Window 1)
+
+| Component | Version | License | Source |
+| --- | --- | --- | --- |
+| libairspyhf | 1.6.8 (Debian 13 `libairspyhf-dev`/`libairspyhf1`; CI: Ubuntu 1.6.8-4build1) | BSD-3-Clause (library sources; the package's GPL-2.0 command-line tools are not used) | https://github.com/airspy/airspyhf — linked only by `ksdr-airspyhf-probe` |
+| pkg-config | Debian 13 system package | GPL-2.0-or-later | build-time tool only (locates libairspyhf); not linked |
+
+`ksdr-airspyhf-probe-mock` (tests) compiles against the libairspyhf header but links our own `worker/probe/mock_airspyhf.c`, not the library.
+
 ## Specifications referenced (not code)
 
 | Item | Use |
