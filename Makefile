@@ -3,10 +3,11 @@ UV      ?= uv
 PY      := $(UV) run --project control --frozen
 SCHEMA  := protocol/schema/control-v1.json
 
-.PHONY: help sync worker worker-san test test-a1 test-worker-san schema schema-check fixtures fixtures-check ledger ledger-check run-dev check
+.PHONY: help sync worker worker-san probe test test-a1 test-worker-san schema schema-check fixtures fixtures-check ledger ledger-check run-dev check
 help:
 	@echo "make sync          install pinned dev environment (control/uv.lock)"
 	@echo "make worker        build the C++ worker (build/worker/ksdr-worker)"
+	@echo "make probe         build the Airspy HF+ probe (needs libairspyhf-dev, pkg-config)"
 	@echo "make test-worker-san  worker tests against an ASan/UBSan build"
 	@echo "make test          run all control tests"
 	@echo "make test-a1       A1: frequency/wire integer-Hz tests"
@@ -23,6 +24,10 @@ sync:
 
 worker:
 	cmake -S worker -B build/worker -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+	cmake --build build/worker
+
+probe:
+	cmake -S worker -B build/worker -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DK2_REQUIRE_AIRSPYHF=ON
 	cmake --build build/worker
 
 worker-san:

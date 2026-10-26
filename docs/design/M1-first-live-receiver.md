@@ -35,7 +35,7 @@ the Optiplex measures and records, while Adam listens to nothing in particular:
 | --- | --- | --- |
 | H1 | `airspyhf_lib_version`, Debian package version, firmware `version_string_read`, serial | Pin what we build against; Debian's libairspyhf appears older than upstream 1.8.1 |
 | H2 | `airspyhf_get_samplerates` list; `is_low_if` per rate | Choose capture rates from what the device reports, not from memory |
-| H3 | `get_att_steps`, `get_frontend_options`, bias-tee count | Which gain/attenuator/AGC controls exist (HF AGC, threshold, att 0–8, LNA) |
+| H3 | Behaviour of the controls Debian's libairspyhf 1.6.8 provides: HF AGC + threshold, HF attenuator index 0–8, LNA, lib DSP, calibration | Gain/AGC defaults. (1.6.8 lacks 1.8.x's `get_att_steps`, front-end options and bias-tee calls; checked against both headers 2026-10-26.) |
 | H4 | Sustained streaming 10 min per candidate rate: `dropped_samples`, callback cadence, CPU | Pick the default rate; baseline for the overnight run |
 | H5 | Retune settle: samples until a known carrier is stable after `set_freq` | How many samples to discard after a retune (frames are already generation-tagged) |
 | H6 | Frequency accuracy against WWV/CHU (10 MHz, 7.85 MHz…) and `get_calibration` | Calibration value and its status shown in the UI |

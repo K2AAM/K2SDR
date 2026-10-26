@@ -7,3 +7,4 @@ build/
 dist/
 /fixtures/external/
 /.dev-state/
+/window1-results/
