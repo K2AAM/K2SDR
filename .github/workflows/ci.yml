@@ -40,11 +40,15 @@ jobs:
           . /etc/os-release && echo "$PRETTY_NAME"
           python3 --version; cc --version | head -1; c++ --version | head -1; cmake --version | head -1; uv --version
       - run: make sync
-      - run: make probe
+      - name: make probe
+        run: |
+          set -o pipefail
+          pkg-config --modversion libairspyhf
+          make probe 2>&1 | tee check.log
       - name: make check
         run: |
           set -o pipefail
-          PYTEST_ADDOPTS="-rfE --tb=short" make check 2>&1 | tee check.log
+          PYTEST_ADDOPTS="-rfE --tb=short" make check 2>&1 | tee -a check.log
       - name: Report failing tests as an annotation
         if: failure()
         run: |
