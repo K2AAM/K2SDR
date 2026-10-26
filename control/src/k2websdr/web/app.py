@@ -21,6 +21,7 @@ import logging
 import sqlite3
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -323,23 +324,44 @@ def create_app(cfg: Config, *, link_factory=None) -> FastAPI:
                 msg = await sess.outbox.get()
                 await ws.send_text(msg.model_dump_json())
 
-        sender = asyncio.create_task(pump())
-        try:
+        async def receive_loop():
             while True:
                 raw = await ws.receive_text()
                 if acc.lookup_session(st.conn, token) is None:
-                    await ws.close(code=4401, reason="session ended")
-                    break
+                    return "session ended"
                 if not bucket.take():
                     sess.send(m.ErrorMsg(v=1, type="error", code=ErrorCode.E_RATE_LIMITED,
                                          detail="too many messages"))
                     continue
                 await st.core.handle(sess, raw)
-        except (WebSocketDisconnect, RuntimeError):
-            pass
+
+        async def session_watchdog():
+            # Enforces expiry and revocation on idle sockets, independently of client messages:
+            # wake at the session's expiry, and at least every ws_session_recheck_s for revocations
+            # made elsewhere (another process, or the database directly).
+            while True:
+                remaining = (info.expires - datetime.now(timezone.utc)).total_seconds()
+                await asyncio.sleep(max(0.0, min(remaining, cfg.ws_session_recheck_s)))
+                if acc.lookup_session(st.conn, token) is None:
+                    return "session expired or revoked"
+
+        tasks = [asyncio.create_task(pump(), name="ws-send"),
+                 asyncio.create_task(receive_loop(), name="ws-recv"),
+                 asyncio.create_task(session_watchdog(), name="ws-session")]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            ended = next(iter(done))
+            if ended.get_name() in ("ws-recv", "ws-session") and not ended.cancelled() \
+                    and ended.exception() is None and ended.result():
+                try:
+                    await ws.close(code=4401, reason=ended.result())
+                except RuntimeError:
+                    pass
         finally:
-            sender.cancel()
-            await asyncio.gather(sender, return_exceptions=True)
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            # Ending the core session releases this session's operator leases; job leases are untouched.
             st.core.close_session(sess)
             st.sockets.get(info.token_hash, set()).discard(ws)
 

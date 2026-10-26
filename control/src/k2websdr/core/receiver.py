@@ -44,6 +44,8 @@ WORKER_RESULT_TO_CODE = {
 }
 
 _FORMAT_NAME = {1: "ci16", 2: "cf32", 3: "ri16", 4: "rf32"}
+# Each capture field validates with its own constrained type (Hz / SampleRateHz).
+_FIELD_TYPE = {"center_hz": m.FrequencyField, "sample_rate_hz": m.SampleRateField}
 
 
 @dataclass
@@ -70,12 +72,18 @@ class CommandOutcome:
     capture_gen: int | None = None
 
 
+# Re-checked immediately before a queued command is sent to the worker.
+# Returns None if the command may still run, else (error code, detail).
+Authorizer = Callable[[], "tuple[ErrorCode, str] | None"]
+
+
 @dataclass
 class _Queued:
     cmd_id: str
     center_hz: int | None
     rate_hz: int | None
     future: asyncio.Future = field(repr=False)
+    authorize: Authorizer | None = field(default=None, repr=False)
 
 
 LinkFactory = Callable[["ReceiverRuntime"], "object"]   # returns a WorkerLink bound to this runtime
@@ -110,8 +118,8 @@ class ReceiverRuntime:
             lease=self.lease.to_model(),
             capture_gen=0,
             capture=m.Capture(
-                center_hz=m.FieldState[int](),
-                sample_rate_hz=m.FieldState[int](),
+                center_hz=m.FrequencyField(),
+                sample_rate_hz=m.SampleRateField(),
                 antenna=m.FieldState[str](status="unsupported"),
             ),
             capabilities=m.Capabilities(
@@ -160,10 +168,10 @@ class ReceiverRuntime:
             t.replace(*self._path("capture_gen"), value=gen_start)
             # Replay parameters are facts from the recording, not a device readback.
             t.replace(*self._path("capture", "center_hz"),
-                      value=m.FieldState[int](requested=rec.freq_origin_hz, applied=rec.freq_origin_hz,
+                      value=m.FrequencyField(requested=rec.freq_origin_hz, applied=rec.freq_origin_hz,
                                               status="applied", verified="none"))
             t.replace(*self._path("capture", "sample_rate_hz"),
-                      value=m.FieldState[int](requested=rec.sample_rate_hz, applied=rec.sample_rate_hz,
+                      value=m.SampleRateField(requested=rec.sample_rate_hz, applied=rec.sample_rate_hz,
                                               status="applied", verified="none"))
 
     async def stop(self) -> None:
@@ -223,18 +231,26 @@ class ReceiverRuntime:
         return self._link
 
     # ------------------------------------------------------------- commands
-    def submit_set_capture(self, cmd_id: str, center_hz: int | None, rate_hz: int | None) -> tuple[int, asyncio.Future]:
-        """Mark the requested fields pending (one revision) and queue the command."""
+    def submit_set_capture(self, cmd_id: str, center_hz: int | None, rate_hz: int | None,
+                           authorize: Authorizer | None = None) -> tuple[int, asyncio.Future]:
+        """Mark the requested fields pending (one revision) and queue the command.
+
+        `authorize` is re-run immediately before the command is sent to the
+        worker: ownership checked at submission can have changed while the
+        command waited behind others (lease taken over, session ended,
+        generation moved on). A command that fails it never reaches hardware
+        and still gets exactly one (failed) outcome.
+        """
         with self.store.txn() as t:
             for name, value in (("center_hz", center_hz), ("sample_rate_hz", rate_hz)):
                 if value is None:
                     continue
                 cur = t.get(*self._path("capture", name))
-                t.replace(*self._path("capture", name), value=m.FieldState[int](
+                t.replace(*self._path("capture", name), value=_FIELD_TYPE[name](
                     requested=value, applied=cur["applied"], status="pending", cmd=cmd_id,
                     verified=cur["verified"] if cur["applied"] is not None else "none"))
         fut = asyncio.get_running_loop().create_future()
-        self._queue.put_nowait(_Queued(cmd_id, center_hz, rate_hz, fut))
+        self._queue.put_nowait(_Queued(cmd_id, center_hz, rate_hz, fut, authorize))
         return self.store.rev, fut
 
     async def _execute(self) -> None:
@@ -242,6 +258,12 @@ class ReceiverRuntime:
 
         while True:
             q = await self._queue.get()
+            denied = q.authorize() if q.authorize is not None else None
+            if denied is not None:
+                outcome = self._record_failure(q, denied[0], detail=denied[1])
+                if not q.future.done():
+                    q.future.set_result(outcome)
+                continue
             self.executed.append(q.cmd_id)
             try:
                 if self._link is None:
@@ -293,16 +315,16 @@ class ReceiverRuntime:
                 t.replace(*self._path("capture", name), value=new)   # validated with the whole state at commit
         return self.store.rev
 
-    def _record_failure(self, q: _Queued, code: ErrorCode) -> CommandOutcome:
+    def _record_failure(self, q: _Queued, code: ErrorCode, detail: str | None = None) -> CommandOutcome:
         with self.store.txn() as t:
             for name in self._fields(q):
                 cur = t.get(*self._path("capture", name))
                 if cur["cmd"] != q.cmd_id:
                     continue        # a later command already owns this field
-                t.replace(*self._path("capture", name), value=m.FieldState[int](
+                t.replace(*self._path("capture", name), value=_FIELD_TYPE[name](
                     requested=cur["requested"], applied=cur["applied"], status="failed", cmd=q.cmd_id,
                     verified=cur["verified"] if cur["applied"] is not None else "none", error=code))
-        return CommandOutcome("failed", self.store.rev, code=code)
+        return CommandOutcome("failed", self.store.rev, code=code, detail=detail)
 
 
 def replay_link_factory(worker_bin: Path, lock_dir: Path) -> LinkFactory:

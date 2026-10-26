@@ -45,6 +45,7 @@ class Config:
     login_attempts_per_minute: int = 5
     ws_messages_per_second: float = 20.0
     ws_burst: int = 40
+    ws_session_recheck_s: float = 30.0       # idle sockets re-check their session at least this often
     receivers: tuple[ReceiverEntry, ...] = field(default_factory=tuple)
 
     @property
@@ -88,6 +89,8 @@ def validate(cfg: Config) -> Config:
     for o in cfg.allowed_origins:
         if not (o.startswith("http://") or o.startswith("https://")) or o.endswith("/"):
             raise ConfigError(f"allowed_origins entries look like 'http://127.0.0.1:8075', got {o!r}")
+    if not 0.05 <= cfg.ws_session_recheck_s <= 3600:
+        raise ConfigError("ws_session_recheck_s out of range")
     if not 1 <= cfg.session_hours <= 24 * 30:
         raise ConfigError("session_hours out of range")
     ids = [r.id for r in cfg.receivers]
