@@ -206,10 +206,10 @@
           "$ref": "#/$defs/FieldState_str_"
         },
         "center_hz": {
-          "$ref": "#/$defs/FieldState_int_"
+          "$ref": "#/$defs/FrequencyField"
         },
         "sample_rate_hz": {
-          "$ref": "#/$defs/FieldState_int_"
+          "$ref": "#/$defs/SampleRateField"
         }
       },
       "required": [
@@ -638,83 +638,6 @@
       "title": "ErrorMsg",
       "type": "object"
     },
-    "FieldState_int_": {
-      "additionalProperties": false,
-      "properties": {
-        "applied": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Applied"
-        },
-        "cmd": {
-          "anyOf": [
-            {
-              "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Cmd"
-        },
-        "error": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ErrorCode"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "requested": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Requested"
-        },
-        "status": {
-          "default": "idle",
-          "enum": [
-            "idle",
-            "pending",
-            "applied",
-            "failed",
-            "unsupported"
-          ],
-          "title": "Status",
-          "type": "string"
-        },
-        "verified": {
-          "default": "none",
-          "enum": [
-            "none",
-            "driver_readback",
-            "rf_evidence"
-          ],
-          "title": "Verified",
-          "type": "string"
-        }
-      },
-      "title": "FieldState[int]",
-      "type": "object"
-    },
     "FieldState_str_": {
       "additionalProperties": false,
       "properties": {
@@ -790,6 +713,88 @@
         }
       },
       "title": "FieldState[str]",
+      "type": "object"
+    },
+    "FrequencyField": {
+      "additionalProperties": false,
+      "description": "A hardware-controlled frequency: requested and applied are integer Hz within the global bound.",
+      "properties": {
+        "applied": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Applied"
+        },
+        "cmd": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cmd"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "requested": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested"
+        },
+        "status": {
+          "default": "idle",
+          "enum": [
+            "idle",
+            "pending",
+            "applied",
+            "failed",
+            "unsupported"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "verified": {
+          "default": "none",
+          "enum": [
+            "none",
+            "driver_readback",
+            "rf_evidence"
+          ],
+          "title": "Verified",
+          "type": "string"
+        }
+      },
+      "title": "FrequencyField",
       "type": "object"
     },
     "JobState": {
@@ -1466,6 +1471,88 @@
         "rev"
       ],
       "title": "Result",
+      "type": "object"
+    },
+    "SampleRateField": {
+      "additionalProperties": false,
+      "description": "A hardware-controlled sample rate: requested and applied are integer Hz, > 0, within u32.",
+      "properties": {
+        "applied": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 4294967295,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Applied"
+        },
+        "cmd": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cmd"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "requested": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 4294967295,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested"
+        },
+        "status": {
+          "default": "idle",
+          "enum": [
+            "idle",
+            "pending",
+            "applied",
+            "failed",
+            "unsupported"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "verified": {
+          "default": "none",
+          "enum": [
+            "none",
+            "driver_readback",
+            "rf_evidence"
+          ],
+          "title": "Verified",
+          "type": "string"
+        }
+      },
+      "title": "SampleRateField",
       "type": "object"
     },
     "ServerInfo": {

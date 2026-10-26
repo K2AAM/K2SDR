@@ -110,7 +110,7 @@ def _integer_only(sub, defs) -> bool:
     t = sub.get("type")
     if t == "integer":
         return True
-    if t == "object" and sub.get("title", "").startswith("FieldState"):
+    if t == "object" and sub.get("title", "") in ("FrequencyField", "SampleRateField"):
         props = sub["properties"]
         return _integer_only(props["requested"], defs) and _integer_only(props["applied"], defs)
     if t == "array":
@@ -272,9 +272,9 @@ def _snapshot() -> m.Snapshot:
                       since_utc=datetime(2026, 10, 26, 17, 25, tzinfo=timezone.utc)),
         capture_gen=13,
         capture=m.Capture(
-            center_hz=m.FieldState[int](requested=7_074_000, applied=7_074_000, status="applied",
+            center_hz=m.FrequencyField(requested=7_074_000, applied=7_074_000, status="applied",
                                         verified="driver_readback"),
-            sample_rate_hz=m.FieldState[int](requested=768_000, applied=768_000, status="applied"),
+            sample_rate_hz=m.SampleRateField(requested=768_000, applied=768_000, status="applied"),
             antenna=fs_unsup,
         ),
         capabilities=m.Capabilities(freq_range_hz=(0, 30_000_000), sample_rates_hz=[768_000],
@@ -301,3 +301,62 @@ def test_snapshot_round_trip_is_exact():
 def test_naive_timestamps_rejected():
     with pytest.raises(ValidationError):
         m.Lease(since_utc=datetime(2026, 10, 26, 17, 25))
+
+
+# ------------------------------------------- capture field constraints (review fix #4)
+
+@pytest.mark.parametrize("bad", [-1, m.MAX_HZ + 1, 2**63, 7_074_000.0, True, "7074000"])
+@pytest.mark.parametrize("which", ["requested", "applied"])
+def test_frequency_field_rejects_out_of_range_and_non_integers(bad, which):
+    with pytest.raises(ValidationError):
+        m.FrequencyField(**{which: bad})
+
+
+@pytest.mark.parametrize("bad", [0, -1, 2**32, 48_000.0, False])
+@pytest.mark.parametrize("which", ["requested", "applied"])
+def test_sample_rate_field_rejects_zero_out_of_range_and_non_integers(bad, which):
+    with pytest.raises(ValidationError):
+        m.SampleRateField(**{which: bad})
+
+
+def test_capture_field_boundaries_are_accepted():
+    assert m.FrequencyField(requested=0, applied=m.MAX_HZ).applied == m.MAX_HZ
+    assert m.SampleRateField(requested=1, applied=2**32 - 1).applied == 2**32 - 1
+
+
+def _store_with_receiver():
+    from k2websdr.core.store import StateStore
+
+    snap = _snapshot()
+    return StateStore(snap.state)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("center_hz", -1), ("center_hz", m.MAX_HZ + 1), ("center_hz", 1.5),
+    ("sample_rate_hz", 0), ("sample_rate_hz", -48_000), ("sample_rate_hz", 2**32),
+])
+@pytest.mark.parametrize("which", ["requested", "applied"])
+def test_invalid_capture_values_cannot_be_committed(field, value, which):
+    store = _store_with_receiver()
+    before, rev = store.view(), store.rev
+    with pytest.raises(ValidationError):
+        with store.txn() as t:
+            t.replace("receivers", "replay-0", "capture", field, which, value=value)
+    assert store.view() == before and store.rev == rev, "a rejected transaction leaves no trace"
+
+
+@pytest.mark.parametrize("field,value", [("center_hz", 0), ("center_hz", m.MAX_HZ),
+                                         ("sample_rate_hz", 1), ("sample_rate_hz", 2**32 - 1)])
+def test_boundary_capture_values_can_be_committed(field, value):
+    store = _store_with_receiver()
+    with store.txn() as t:
+        t.replace("receivers", "replay-0", "capture", field, "applied", value=value)
+    assert store.snapshot().state.receivers["replay-0"].capture.model_dump()[field]["applied"] == value
+
+
+@pytest.mark.parametrize("field,value", [("center_hz", -7_074_000), ("sample_rate_hz", 0)])
+def test_snapshot_with_invalid_capture_values_is_rejected(field, value):
+    doc = json.loads(m.dump_server_message(_snapshot()))
+    doc["state"]["receivers"]["replay-0"]["capture"][field]["applied"] = value
+    with pytest.raises(ValidationError):
+        m.SERVER_ADAPTER.validate_json(json.dumps(doc), strict=True)

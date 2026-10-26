@@ -51,11 +51,37 @@ mismatch the client discards the patch and requests a new snapshot.
 - Hardware commands require the lease (`E_NOT_LEASE_HOLDER`) and run strictly
   one at a time per receiver, in submission order.
 
+## Re-authorization at execution
+
+Hardware commands queue per receiver. Everything checked at acceptance (session
+still open, permission, lease holder, `if_capture_gen` precondition) is checked
+again immediately before the command is sent to the worker. A command that no
+longer passes never reaches the hardware and gets its single `result` as
+`failed` with `E_UNAUTHENTICATED`, `E_FORBIDDEN`, `E_NOT_LEASE_HOLDER` or
+`E_STALE_PRECONDITION`. A command already sent to the hardware completes and
+is reconciled normally.
+
 ## Idempotency
 
-Retrying a command `id` within 10 minutes returns the original `ack` (and
-`result`, if finished) without executing again, including from a new session
-after a reconnect.
+Retrying a command `id` returns the original `ack` (and `result`, if finished)
+without executing again, including from a new session after a reconnect.
+Finished outcomes (results and rejections) are kept for 10 minutes after they
+finish; the cache is also capped at 10,000 records, evicting the oldest
+finished outcomes first. A command still in flight is never evicted.
+
+## Session expiry on WebSockets
+
+An idle WebSocket closes (code 4401) when its login session expires or is
+revoked, without waiting for a client message: it wakes at the expiry time and
+re-checks the session at least every `ws_session_recheck_s` (default 30 s).
+Closing ends the core session, which releases its operator leases; server-job
+leases are unaffected.
+
+## Capture fields
+
+`center_hz` uses `FrequencyField` (requested/applied: integer Hz, 0–10 GHz) and
+`sample_rate_hz` uses `SampleRateField` (integer Hz, 1–4 294 967 295). Every
+state commit and every snapshot is validated against these bounds.
 
 ## Deferred within v1 (additive later)
 

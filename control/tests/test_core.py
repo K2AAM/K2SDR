@@ -389,7 +389,9 @@ async def test_retry_from_a_new_session_after_disconnect_gets_the_result():
     a = await operator_with_lease(core)
     cid, raw = cmd("receiver.set_capture", receiver=RX, center_hz=CENTER)
     await a.send_raw(raw)
-    core.close_session(a.session)                 # browser suspended mid-command
+    while not FakeWorker.instances[-1].calls:     # wait until it is actually in flight at the worker
+        await asyncio.sleep(0.005)
+    core.close_session(a.session)                 # browser suspended while the hardware works on it
     b = Client(core, OPERATOR)
     await b.send_raw(raw)                         # reconnect and retry the same id
     gate.set()
@@ -444,4 +446,168 @@ async def test_every_published_state_is_valid():
     await c.outcome(await c.send("receiver.set_capture", receiver=RX, center_hz=CENTER))
     for state in c.history:
         m.ServerState.model_validate_json(json.dumps(state))
+    await core.shutdown()
+
+
+# ------------------------------------------------ command cache expiry (review fix #3)
+
+def _age(core, cid, seconds):
+    rec = next(r for (u, i), r in core._cmds.items() if i == cid)
+    rec.created -= seconds
+    if rec.finished is not None:
+        rec.finished -= seconds
+
+
+@async_test
+async def test_rejected_outcomes_expire_after_ttl():
+    from k2websdr.core import service
+
+    core, rt = await make()
+    c = Client(core, LISTENER)
+    rejected = await c.send("receiver.claim", receiver=RX)            # E_FORBIDDEN
+    ack, _ = await c.outcome(rejected)
+    assert ack.status == "rejected"
+    assert any(i == rejected for (_, i) in core._cmds)
+    _age(core, rejected, service.IDEMPOTENCY_TTL + 1)
+    await c.send("session.hello", client="t")                         # any message runs the cleanup
+    assert not any(i == rejected for (_, i) in core._cmds), "rejected record must not live forever"
+    await core.shutdown()
+
+
+@async_test
+async def test_in_flight_command_is_never_expired_and_never_runs_twice():
+    from k2websdr.core import service
+
+    gate = asyncio.Event()
+    core, rt = await make([("apply",)], gate=gate)
+    c = await operator_with_lease(core)
+    cid, raw = cmd("receiver.set_capture", receiver=RX, center_hz=CENTER)
+    await c.send_raw(raw)
+    await asyncio.sleep(0.02)
+    _age(core, cid, service.IDEMPOTENCY_TTL * 10)                    # far beyond the TTL, still in flight
+    await c.send_raw(raw)                                             # retry: must not execute again
+    assert any(i == cid for (_, i) in core._cmds)
+    gate.set()
+    _, res = await c.outcome(cid)
+    assert res.status == "applied"
+    assert len(FakeWorker.instances[-1].calls) == 1
+    await core.shutdown()
+
+
+@async_test
+async def test_cache_is_bounded_but_keeps_in_flight_commands(monkeypatch):
+    from k2websdr.core import service
+
+    monkeypatch.setattr(service, "MAX_CMD_RECORDS", 5)
+    gate = asyncio.Event()
+    core, rt = await make([("apply",)], gate=gate)
+    op = await operator_with_lease(core)                              # claim + subscribe: 2 finished records
+    in_flight = await op.send("receiver.set_capture", receiver=RX, center_hz=CENTER)
+    g = Client(core, LISTENER)
+    for _ in range(20):                                               # 20 rejections inside the TTL
+        await g.send("receiver.claim", receiver=RX)
+    assert len(core._cmds) <= 5
+    assert any(i == in_flight for (_, i) in core._cmds), "in-flight command evicted"
+    gate.set()
+    _, res = await op.outcome(in_flight)
+    assert res.status == "applied"
+    await core.shutdown()
+
+
+
+# -------------------------------- queued commands are re-authorized before execution (review fix #1)
+
+async def _wait_in_flight(n: int = 1):
+    while len(FakeWorker.instances[-1].calls) < n:
+        await asyncio.sleep(0.005)
+
+
+def _replies(c: Client, cid: str):
+    c.drain()
+    return [x for x in c.log if isinstance(x, (m.Ack, m.Result)) and x.id == cid]
+
+
+@async_test
+async def test_queued_command_never_runs_after_lease_is_taken_over():
+    gate = asyncio.Event()
+    core, rt = await make([("apply",), ("apply",)], gate=gate, policy="preempt_with_notice")
+    a = await operator_with_lease(core)
+    first = await a.send("receiver.set_capture", receiver=RX, center_hz=CENTER)
+    second = await a.send("receiver.set_capture", receiver=RX, sample_rate_hz=RATE)
+    await _wait_in_flight(1)                                          # first is at the worker, second queued
+    b = Client(core, OPERATOR)
+    ack, _ = await b.outcome(await b.send("receiver.claim", receiver=RX, takeover="preempt_with_notice"))
+    assert ack.status == "accepted" and rt.lease.holder.session == b.session.id
+    gate.set()
+    _, r1 = await a.outcome(first)
+    _, r2 = await a.outcome(second)
+    assert r1.status == "applied", "a command already at the hardware is reconciled normally"
+    assert (r2.status, r2.code) == ("failed", ErrorCode.E_NOT_LEASE_HOLDER)
+    assert "lease lost" in r2.detail
+    assert FakeWorker.instances[-1].calls == [(CENTER, None)], "A's second command must never reach the worker"
+    assert rt.executed == [first]
+    for cid in (first, second):                                       # exactly one ack and one result each
+        assert [type(x).__name__ for x in _replies(a, cid)] == ["Ack", "Result"]
+    f = a.field(RX, "sample_rate_hz")
+    assert (f["status"], f["error"], f["cmd"]) == ("failed", "E_NOT_LEASE_HOLDER", second)
+    assert f["applied"] == RATE, "the device value is unchanged"
+    await core.shutdown()
+
+
+@async_test
+async def test_queued_command_never_runs_after_its_session_closes():
+    gate = asyncio.Event()
+    core, rt = await make([("apply",), ("apply",)], gate=gate)
+    a = await operator_with_lease(core)
+    watcher = Client(core, LISTENER)
+    await watcher.subscribe()
+    first = await a.send("receiver.set_capture", receiver=RX, center_hz=CENTER)
+    second_id, second_raw = cmd("receiver.set_capture", receiver=RX, sample_rate_hz=RATE)
+    await a.send_raw(second_raw)
+    await _wait_in_flight(1)
+    core.close_session(a.session)                                    # browser gone with a command still queued
+    assert rt.lease.holder is None
+    gate.set()
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if len(rt.executed) == 1 and not rt._queue.qsize():
+            break
+    assert FakeWorker.instances[-1].calls == [(CENTER, None)], "the queued command must never reach the worker"
+    # Reconnect and retry the same id: the single, final outcome is delivered.
+    b = Client(core, OPERATOR)
+    await b.send_raw(second_raw)
+    ack, res = await b.outcome(second_id)
+    assert ack.status == "accepted" and (res.status, res.code) == ("failed", ErrorCode.E_UNAUTHENTICATED)
+    watcher.drain()
+    assert watcher.mirror["receivers"][RX]["capture"]["sample_rate_hz"]["error"] == "E_UNAUTHENTICATED"
+    await core.shutdown()
+
+
+@async_test
+async def test_generation_precondition_is_rechecked_at_execution():
+    gate = asyncio.Event()
+    core, rt = await make([("apply",), ("apply",)], gate=gate)
+    a = await operator_with_lease(core)
+    gen = rt.capture_gen
+    first = await a.send("receiver.set_capture", receiver=RX, center_hz=CENTER, if_capture_gen=gen)
+    second = await a.send("receiver.set_capture", receiver=RX, center_hz=CENTER, if_capture_gen=gen)
+    gate.set()
+    _, r1 = await a.outcome(first)
+    _, r2 = await a.outcome(second)
+    assert r1.status == "applied" and r1.capture_gen == gen + 1
+    assert (r2.status, r2.code) == ("failed", ErrorCode.E_STALE_PRECONDITION)
+    assert len(FakeWorker.instances[-1].calls) == 1
+    await core.shutdown()
+
+
+@async_test
+async def test_queued_command_still_runs_when_nothing_changed():
+    gate = asyncio.Event()
+    core, rt = await make([("apply",), ("apply",)], gate=gate)
+    a = await operator_with_lease(core)
+    ids = [await a.send("receiver.set_capture", receiver=RX, center_hz=CENTER),
+           await a.send("receiver.set_capture", receiver=RX, sample_rate_hz=RATE)]
+    gate.set()
+    assert [(await a.outcome(i))[1].status for i in ids] == ["applied", "applied"]
+    assert len(FakeWorker.instances[-1].calls) == 2
     await core.shutdown()

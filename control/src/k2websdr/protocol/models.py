@@ -237,6 +237,20 @@ class FieldState(Strict, Generic[T]):
         return self
 
 
+class FrequencyField(FieldState[int]):
+    """A hardware-controlled frequency: requested and applied are integer Hz within the global bound."""
+
+    requested: Hz | None = None
+    applied: Hz | None = None
+
+
+class SampleRateField(FieldState[int]):
+    """A hardware-controlled sample rate: requested and applied are integer Hz, > 0, within u32."""
+
+    requested: SampleRateHz | None = None
+    applied: SampleRateHz | None = None
+
+
 class AntennaPort(Strict):
     id: PortId
     label: Annotated[str, Field(max_length=64)]   # custom label, e.g. "C — HF"
@@ -276,8 +290,8 @@ class Lease(Strict):
 
 
 class Capture(Strict):
-    center_hz: FieldState[int]
-    sample_rate_hz: FieldState[int]
+    center_hz: FrequencyField
+    sample_rate_hz: SampleRateField
     antenna: FieldState[str]
 
 

@@ -113,6 +113,7 @@ class SessionInfo:
     username: str
     role: str
     csrf_token: str
+    expires: datetime
 
     @property
     def permissions(self) -> frozenset[str]:
@@ -141,9 +142,10 @@ def lookup_session(conn: sqlite3.Connection, token: str | None) -> SessionInfo |
         "FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash=?", (_hash_token(token),)).fetchone()
     if row is None or row["revoked"] or row["disabled"]:
         return None
-    if datetime.fromisoformat(row["expires_utc"]) <= _now():
+    expires = datetime.fromisoformat(row["expires_utc"])
+    if expires <= _now():
         return None
-    return SessionInfo(row["token_hash"], row["user_id"], row["username"], row["role"], row["csrf_token"])
+    return SessionInfo(row["token_hash"], row["user_id"], row["username"], row["role"], row["csrf_token"], expires)
 
 
 def revoke_session(conn: sqlite3.Connection, token_hash: str) -> None:

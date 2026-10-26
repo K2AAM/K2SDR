@@ -456,3 +456,75 @@ def test_spoofed_forwarded_for_does_not_evade_login_limit(tmp_path):
         codes = [c.post("/login", data={"username": "x", "password": "y"},
                         headers={**ORIGIN, "X-Forwarded-For": f"198.51.100.{i}"}).status_code for i in range(7)]
         assert codes[-1] == 429
+
+
+# ------------------------------------------- WebSocket session expiry (review fix #2)
+
+import signal as _signal
+import time as _time
+from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+
+def _set_expiry(cfg, username: str, seconds_from_now: float) -> None:
+    when = (_dt.now(_tz.utc) + _td(seconds=seconds_from_now)).isoformat(timespec="microseconds")
+    conn = sqlite3.connect(cfg.db_path)
+    conn.execute("UPDATE sessions SET expires_utc=? WHERE user_id=(SELECT id FROM users WHERE username=?)",
+                 (when, username))
+    conn.commit()
+
+
+def _until_closed(ws, limit_s: float = 10.0) -> tuple[int, float]:
+    """Read server pushes only (no client messages) until the server closes the socket."""
+    t0 = _time.monotonic()
+    _signal.signal(_signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError("socket never closed")))
+    _signal.setitimer(_signal.ITIMER_REAL, limit_s)
+    try:
+        with pytest.raises(WebSocketDisconnect) as e:
+            while True:
+                ws.receive_text()
+        return e.value.code, _time.monotonic() - t0
+    finally:
+        _signal.setitimer(_signal.ITIMER_REAL, 0)
+
+
+def _two_receiver_cfg(tmp_path, **over):
+    rec = ROOT / "fixtures/iq/two_tone_ci16.sigmf-meta"
+    return make_cfg(tmp_path, receivers=(ReceiverEntry(RX, "A", rec), ReceiverEntry("replay-1", "B", rec)), **over)
+
+
+def test_idle_websocket_closes_when_session_expires_and_releases_operator_lease(tmp_path):
+    cfg = _two_receiver_cfg(tmp_path, ws_session_recheck_s=0.1)
+    with client(cfg) as c:
+        do_setup(c, cfg)
+        login(c)
+        add_user(c, "op", "operator")
+        op_token = second_login(c, "op", "another long password")
+        core = c.app.state.k2.core
+        job = c.portal.call(core.start_stub_job, "replay-1")          # a server job on the other receiver
+        with ws_connect(c, token=op_token) as ws:
+            cid = ws_cmd(ws, "state.subscribe")
+            ws_until(ws, lambda m: m.get("id") == cid and m["type"] == "result")
+            cid = ws_cmd(ws, "receiver.claim", receiver=RX)
+            ws_until(ws, lambda m: m.get("id") == cid and m["type"] == "result")
+            assert c.get("/api/state").json()["state"]["receivers"][RX]["lease"]["holder"]["principal"] == "user:op"
+            _set_expiry(cfg, "op", 0.4)                                # expires shortly; the client stays silent
+            code, waited = _until_closed(ws)
+            assert code == 4401 and waited < 5.0
+        state = c.get("/api/state").json()["state"]                   # admin's session is still valid
+        assert state["receivers"][RX]["lease"]["holder"] is None, "operator lease released at expiry"
+        holder = state["receivers"]["replay-1"]["lease"]["holder"]
+        assert holder["kind"] == "job" and holder["job"] == job, "server-job lease survives"
+        assert state["jobs"][job]["state"] == "running"
+
+
+def test_websocket_wakes_at_expiry_time_not_only_on_periodic_recheck(tmp_path):
+    cfg = _two_receiver_cfg(tmp_path, ws_session_recheck_s=600)      # periodic recheck effectively off
+    with client(cfg) as c:
+        do_setup(c, cfg)
+        login(c)
+        add_user(c, "op", "operator")
+        op_token = second_login(c, "op", "another long password")
+        _set_expiry(cfg, "op", 0.8)                                    # known before connecting
+        with ws_connect(c, token=op_token) as ws:
+            code, waited = _until_closed(ws, limit_s=10)
+        assert code == 4401 and waited < 3.0, waited

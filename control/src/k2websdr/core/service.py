@@ -29,6 +29,7 @@ from .receiver import ReceiverConfig, ReceiverRuntime
 from .store import StateStore
 
 IDEMPOTENCY_TTL = 600.0
+MAX_CMD_RECORDS = 10_000      # hard bound; only finished records are ever evicted
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,11 @@ class _CmdRecord:
     result: m.Result | None = None
     sessions: set[str] = field(default_factory=set)
     created: float = field(default_factory=time.monotonic)
+    finished: float | None = None   # set when the outcome is final: rejected ack, or result
+
+    @property
+    def in_flight(self) -> bool:
+        return self.finished is None
 
 
 class Rejected(Exception):
@@ -162,7 +168,10 @@ class ControlCore:
         ack = m.Ack(v=1, type="ack", id=cmd_id, status=status, code=code, detail=detail,
                     rev=self.store.rev if status == "accepted" else None)
         rec = _CmdRecord(ack=ack, sessions={s.id})
+        if status == "rejected":
+            rec.finished = time.monotonic()      # a rejection is a final outcome
         self._cmds[(s.principal.user, cmd_id)] = rec
+        self._expire_cmds()                      # keep the bound after every insertion
         s.send(ack)
         return rec
 
@@ -170,6 +179,7 @@ class ControlCore:
                       detail: str | None = None, capture_gen: int | None = None) -> None:
         rec.result = m.Result(v=1, type="result", id=cmd_id, status=status, code=code, detail=detail,
                               rev=self.store.rev, capture_gen=capture_gen)
+        rec.finished = time.monotonic()
         for sid in rec.sessions:
             sess = self.sessions.get(sid)
             if sess is not None:
@@ -180,9 +190,19 @@ class ControlCore:
         self._reply_result(rec, cmd_id, "applied")
 
     def _expire_cmds(self) -> None:
+        """Drop finished outcomes older than the TTL, then enforce the hard bound.
+
+        In-flight commands (accepted, no result yet) are never dropped: a retry
+        of one must keep finding it, or the command could execute twice.
+        """
         cutoff = time.monotonic() - IDEMPOTENCY_TTL
-        for k in [k for k, r in self._cmds.items() if r.created < cutoff and r.result is not None]:
+        for k in [k for k, r in self._cmds.items() if not r.in_flight and r.finished < cutoff]:
             del self._cmds[k]
+        excess = len(self._cmds) - MAX_CMD_RECORDS
+        if excess > 0:
+            finished = sorted((r.finished, k) for k, r in self._cmds.items() if not r.in_flight)
+            for _, k in finished[:excess]:
+                del self._cmds[k]
 
     def _receiver(self, rid: str) -> ReceiverRuntime:
         rt = self.receivers.get(rid)
@@ -231,9 +251,28 @@ class ControlCore:
                 raise Rejected(ErrorCode.E_OUT_OF_RANGE, f"center_hz outside {rng[0]}..{rng[1]}")
         if a.sample_rate_hz is not None and a.sample_rate_hz not in caps["sample_rates_hz"]:
             raise Rejected(ErrorCode.E_OUT_OF_RANGE, f"sample_rate_hz not in {caps['sample_rates_hz']}")
-        _rev, fut = rt.submit_set_capture(cmd.id, a.center_hz, a.sample_rate_hz)
+        _rev, fut = rt.submit_set_capture(cmd.id, a.center_hz, a.sample_rate_hz,
+                                          authorize=self._authorizer(s, rt, "hw.retune", a.if_capture_gen))
         rec = self._reply_ack(s, cmd.id, "accepted")
         self._spawn(self._finish(rec, cmd.id, fut))
+
+    def _authorizer(self, s: Session, rt: ReceiverRuntime, permission: str, if_capture_gen: int | None):
+        """Everything checked at acceptance, re-checked when the command reaches the front of the queue."""
+        holder = s.holder
+
+        def check() -> tuple[ErrorCode, str] | None:
+            if s.closed or self.sessions.get(s.id) is not s:
+                return ErrorCode.E_UNAUTHENTICATED, "session ended before the command ran"
+            if permission not in s.principal.permissions:
+                return ErrorCode.E_FORBIDDEN, f"requires permission {permission}"
+            if rt.lease.holder != holder:
+                who = rt.lease.holder.principal if rt.lease.holder else "nobody"
+                return ErrorCode.E_NOT_LEASE_HOLDER, f"lease lost before the command ran (now held by {who})"
+            if if_capture_gen is not None and rt.capture_gen != if_capture_gen:
+                return ErrorCode.E_STALE_PRECONDITION, f"capture_gen is {rt.capture_gen}, not {if_capture_gen}"
+            return None
+
+        return check
 
     async def _finish(self, rec: _CmdRecord, cmd_id: str, fut: asyncio.Future) -> None:
         out = await fut
