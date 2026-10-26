@@ -50,13 +50,15 @@ class Frame:
 class WorkerProc:
     def __init__(self, rec: Recording, ident: WorkerIdentity, *, frame_samples: int = 4096,
                  paced: bool = False, loop: bool = False, extra_args: list[str] | None = None,
+                 capture_gen_start: int = 1,
                  expect_running: bool = True) -> None:
         if not WORKER_BIN.is_file():
             raise FileNotFoundError(f"{WORKER_BIN} not built; run: make worker")
         self.ctl, ctl_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         self.data, data_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         argv = replay_argv(WORKER_BIN, rec, ident, ctl_fd=ctl_child.fileno(), data_fd=data_child.fileno(),
-                           frame_samples=frame_samples, paced=paced, loop=loop) + (extra_args or [])
+                           frame_samples=frame_samples, paced=paced, loop=loop,
+                           capture_gen_start=capture_gen_start) + (extra_args or [])
         self.proc = subprocess.Popen(argv, pass_fds=(ctl_child.fileno(), data_child.fileno()),
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.PIPE)

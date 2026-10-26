@@ -33,6 +33,7 @@ struct Args {
     int64_t origin_hz = 0;
     std::vector<DiscontinuityArg> discontinuities;  // strictly increasing
 
+    uint64_t capture_gen_start = 1;  // first generation; > previous worker's last on restart
     uint32_t frame_samples = 4096;
     bool paced = false;              // real-time pacing; default is as fast as the consumer reads
     bool loop = false;               // wrap at end of file instead of END_OF_STREAM

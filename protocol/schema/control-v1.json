@@ -792,6 +792,63 @@
       "title": "FieldState[str]",
       "type": "object"
     },
+    "JobState": {
+      "additionalProperties": false,
+      "description": "A server-owned background job (e.g. a scan). Jobs never depend on a browser session.",
+      "properties": {
+        "detail": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "holds_lease": {
+          "title": "Holds Lease",
+          "type": "boolean"
+        },
+        "kind": {
+          "pattern": "^[a-z0-9_]{1,32}$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "receiver": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "title": "Receiver",
+          "type": "string"
+        },
+        "since_utc": {
+          "format": "date-time",
+          "title": "Since Utc",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "running",
+            "preempted",
+            "stopped",
+            "failed"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "receiver",
+        "state",
+        "holds_lease",
+        "since_utc"
+      ],
+      "title": "JobState",
+      "type": "object"
+    },
     "Lease": {
       "additionalProperties": false,
       "properties": {
@@ -1482,6 +1539,16 @@
             }
           },
           "title": "Channels",
+          "type": "object"
+        },
+        "jobs": {
+          "default": {},
+          "patternProperties": {
+            "^job_[a-z0-9-]{1,48}$": {
+              "$ref": "#/$defs/JobState"
+            }
+          },
+          "title": "Jobs",
           "type": "object"
         },
         "ledger": {

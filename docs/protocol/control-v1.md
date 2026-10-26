@@ -39,10 +39,27 @@ mismatch the client discards the patch and requests a new snapshot.
   unknown ops → `E_SCHEMA`.
 - `v` other than 1 → `E_UNSUPPORTED_VERSION` (command id echoed when readable).
 
+## Leases and jobs
+
+- `receiver.claim` takes the receiver's lease; `takeover: "preempt_with_notice"`
+  succeeds over another holder only if the receiver's configured policy is also
+  `preempt_with_notice`. Otherwise `E_BUSY`, and the holder is untouched.
+- A preempted job shows `state: "preempted"`, `holds_lease: false` and a
+  `detail` naming who took over. It does not silently re-take the receiver.
+- Operator leases end when their session closes; job leases never depend on a
+  session. Jobs are created server-side until the M4 scanner.
+- Hardware commands require the lease (`E_NOT_LEASE_HOLDER`) and run strictly
+  one at a time per receiver, in submission order.
+
+## Idempotency
+
+Retrying a command `id` within 10 minutes returns the original `ack` (and
+`result`, if finished) without executing again, including from a new session
+after a reconnect.
+
 ## Deferred within v1 (additive later)
 
-- Hardware gain: representation differs per device; defined after M1/M2
-  hardware measurement.
-- Job/scan operations: added with the lease work (M0 block 4).
+- Hardware gain and antenna worker messages: defined with M1/M2 hardware.
+- Client job/scan operations: with the M4 scanner.
 - Listener audio controls: per-session, never global state.
-- Decoder events: defined with the generation gate (M0 block 4).
+- Channels: `channel.open` returns `E_MODE_UNAVAILABLE` until modes exist (M1).

@@ -109,6 +109,17 @@ def test_host_time_is_populated_and_monotonic(recs, ident):
     assert times == sorted(times)
 
 
+def test_capture_gen_start_carries_generation_across_restarts(recs, ident):
+    rec = recs["two_tone_ci16"]
+    with WorkerProc(rec, ident, frame_samples=4000, capture_gen_start=41) as w:
+        frames = w.read_until_eos()
+        assert {f.header.capture_gen for f in frames} == {41}
+        assert F.NEW_GEN in frames[0].header.flags
+        w.set_capture(center_hz=rec.freq_origin_hz)
+        w.read_ctl()
+        assert wc.Applied.unpack_payload(w.read_ctl()[1]).capture_gen == 42
+
+
 # ----------------------------------------------- A8: replay discontinuity flags
 
 def test_gap_fixture_flags_land_on_annotated_samples(recs, ident):
@@ -349,6 +360,7 @@ def test_lock_dir_must_exist(tmp_path, recs):
     ["--device-id", "../etc"], ["--device-id", "UPPER"], ["--format", "cu8"], ["--rate-hz", "0"],
     ["--rate-hz", "48000.0"], ["--rate-hz", "-1"], ["--origin-hz", "7.074e6"], ["--frame-samples", "0"],
     ["--source", "airspyhf"], ["--discontinuity", "0"], ["--bogus", "1"],
+    ["--capture-gen-start", "0"], ["--capture-gen-start", str(2**53)],
 ])
 def test_bad_arguments_exit_with_usage(tmp_path, recs, ident, bad):
     rec = recs["two_tone_ci16"]
