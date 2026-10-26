@@ -7,9 +7,15 @@
  *
  * Command lifecycle (control -> worker):
  *   cmd_seq is assigned by the control service, strictly increasing per
- *   connection, never 0. The worker answers every command with exactly one
- *   ACK, then (if accepted) exactly one APPLIED or FAILED with the same
- *   cmd_seq. Commands are processed strictly in order.
+ *   connection, never 0. The worker answers SET_CAPTURE and STOP with exactly
+ *   one ACK, then (if accepted) exactly one APPLIED or FAILED with the same
+ *   cmd_seq. PING is answered by exactly one PONG and no ACK. Commands are
+ *   processed strictly in order. A malformed message is a control-service
+ *   bug: the worker reports STATUS FAILED/E_BAD_MESSAGE and exits.
+ *
+ *   APPLIED may reach the control service before the last frames of the old
+ *   capture generation have been read from the data socket. The capture_gen
+ *   in each frame header is authoritative for which generation it belongs to.
  *
  * Unsolicited worker messages (STATUS) use cmd_seq = 0.
  *

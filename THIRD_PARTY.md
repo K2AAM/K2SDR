@@ -28,6 +28,10 @@ repository at this time.
 | colorama | 0.4.6 | BSD-3-Clause | https://github.com/tartley/colorama (locked for Windows only; not installed on Linux) |
 | hatchling | 1.32.4 | MIT | https://github.com/pypa/hatch |
 | uv | 0.11.32 (dev host) | MIT OR Apache-2.0 | https://github.com/astral-sh/uv |
+| CMake | Debian 13 system package | BSD-3-Clause | https://cmake.org (worker build) |
+| Ninja | Debian 13 system package | Apache-2.0 | https://ninja-build.org (worker build) |
+
+The worker (`worker/`) links only the C/C++ standard libraries in M0; no SDR or DSP libraries yet.
 
 ## Specifications referenced (not code)
 

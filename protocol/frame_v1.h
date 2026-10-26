@@ -67,8 +67,9 @@ struct ksdr_frame_header_v1 {
     uint16_t format;             /* 10  enum ksdr_sample_format */
     uint32_t flags;              /* 12  enum ksdr_frame_flags */
     uint64_t capture_gen;        /* 16  bumps on any physical capture change */
-    uint64_t seq;                /* 24  per-stream frame counter, starts at 0 */
-    uint64_t first_sample_index; /* 32  sample-count timebase for this stream; never wall clock */
+    uint64_t seq;                /* 24  per-stream frame counter, starts at 0, never resets */
+    uint64_t first_sample_index; /* 32  delivered-sample count within this capture_gen; restarts at
+                                        0 with each new generation; never wall clock */
     int64_t  freq_origin_hz;     /* 40  complex: center frequency; real: 0 Hz edge of sampled band */
     uint64_t host_time_ns;       /* 48  CLOCK_REALTIME estimate; informational only, excluded from
                                         determinism comparisons */
