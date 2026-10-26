@@ -1,7 +1,9 @@
 // The worker event loop: one replay source, one control socket, one data socket.
 //
 // Replay semantics (M0):
-// - capture_gen starts at 1; the first frame carries NEW_GEN.
+// - capture_gen starts at --capture-gen-start (default 1); the first frame
+//   carries NEW_GEN. The control service passes last_gen + 1 when it restarts
+//   a worker, so a receiver's generation never goes backwards.
 // - SET_CAPTURE is accepted only for the recording's own center and rate
 //   (replay cannot honestly relabel samples as another frequency). An accepted
 //   SET_CAPTURE is a re-acquisition: capture_gen increments, playback restarts
@@ -38,7 +40,7 @@ enum ExitCode : int {
 
 class Worker {
 public:
-    Worker(const Args& args, ReplaySource& src) : a_(args), src_(src) {}
+    Worker(const Args& args, ReplaySource& src) : a_(args), src_(src), gen_(args.capture_gen_start) {}
     int run();  // returns an ExitCode
 
 private:
@@ -57,7 +59,7 @@ private:
     OutBuf ctl_out_, data_out_;
     InBuf ctl_in_;
 
-    uint64_t gen_ = 1;
+    uint64_t gen_;
     uint64_t seq_ = 0;                // frame counter, never resets
     uint64_t file_pos_ = 0;           // next file sample to send
     uint64_t delivered_in_gen_ = 0;   // first_sample_index of the next frame

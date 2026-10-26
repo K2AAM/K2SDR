@@ -81,7 +81,8 @@ void print_usage(const char* prog) {
         "usage: %s --device-id ID --lock-dir DIR --receiver-idx N --stream-id N\n"
         "          --ctl-fd FD --data-fd FD --source replay --file PATH.sigmf-data\n"
         "          --format ci16|cf32|ri16|rf32 --rate-hz N --origin-hz N\n"
-        "          [--discontinuity INDEX[:GAP]]... [--frame-samples N] [--paced] [--loop]\n",
+        "          [--discontinuity INDEX[:GAP]]... [--capture-gen-start N] [--frame-samples N]\n"
+        "          [--paced] [--loop]\n",
         prog);
 }
 
@@ -131,6 +132,8 @@ std::optional<Args> parse_args(int argc, char** argv) {
             if (!a.discontinuities.empty() && d.sample_index <= a.discontinuities.back().sample_index)
                 return fail("--discontinuity values must be strictly increasing", v);
             a.discontinuities.push_back(d);
+        } else if (k == "--capture-gen-start") {
+            if (!parse_bounded(v, a.capture_gen_start, 1, (1ull << 53) - 1)) return fail("bad --capture-gen-start", v);
         } else if (k == "--frame-samples") {
             if (!parse_bounded(v, a.frame_samples, 1, 1u << 20)) return fail("bad --frame-samples", v);
         } else {

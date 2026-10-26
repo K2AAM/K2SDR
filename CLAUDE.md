@@ -49,7 +49,7 @@ invent features, or weaken explicit requirements unless Adam asks.
 ## Workflow
 
 - One milestone at a time; within M0, work in the block order of the design
-  note (1 protocol ✅, 2 fixtures ✅, 3 C++ replay worker ✅, 4 control core,
+  note (1 protocol ✅, 2 fixtures ✅, 3 C++ replay worker ✅, 4 control core ✅,
   5 auth/admin/`/healthz`, 6 coexistence tooling + ADRs).
 - Each block: branch `m0/<topic>` → PR → CI green → merge. Keep PRs reviewable.
 - Two Claude sessions may work on this repo: a cloud session (no LAN access)
@@ -72,8 +72,8 @@ Build prerequisites: `build-essential`, `cmake`, `ninja-build`, `python3` (3.13)
 
 ## Milestone 0 acceptance (A1–A14)
 
-A1 integer-Hz wire ✅ · A2 command lifecycle · A3 serialized queue · A4 lease
-and job survival · A5 single device owner (flock) ✅ · A6 deterministic replay ✅ ·
-A7 stale-generation drop · A8 fixtures + replay flags ✅ ·
+A1 integer-Hz wire ✅ · A2 command lifecycle ✅ · A3 serialized queue ✅ · A4 lease
+and job survival ✅ · A5 single device owner (flock) ✅ · A6 deterministic replay ✅ ·
+A7 stale-generation drop ✅ · A8 fixtures + replay flags ✅ ·
 A9 ledger · A10 first run, no default password · A11 HTTP+WS authz ·
 A12 trusted proxies · A13 OWRX coexistence on the Optiplex · A14 schema ✅

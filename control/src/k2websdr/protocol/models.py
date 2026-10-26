@@ -12,10 +12,10 @@ Rules enforced here (outline §3, §9, §11):
 - Hardware fields record requested / applied / status / verification
   separately, so an unacknowledged value can never look applied.
 
-Not yet in v1 (deliberately): hardware gain (its representation differs per
-device and is defined after M1/M2 hardware measurement), job/scan operations
-(added with the lease work in block 4), listener audio controls (per-session,
-never global state).
+Not yet in v1 (deliberately): hardware gain and antenna wire messages to the
+worker (defined with M1/M2 hardware), client job/scan operations (jobs are
+created server-side until the M4 scanner), listener audio controls
+(per-session, never global state).
 """
 
 from __future__ import annotations
@@ -311,6 +311,16 @@ class ChannelState(Strict):
     decoder_taps: list[ModeId] = []   # taps sit at demod output, upstream of all listener audio controls
 
 
+class JobState(Strict):
+    """A server-owned background job (e.g. a scan). Jobs never depend on a browser session."""
+    kind: Annotated[str, Field(pattern=r"^[a-z0-9_]{1,32}$")]
+    receiver: ReceiverId
+    state: Literal["running", "preempted", "stopped", "failed"]
+    holds_lease: bool
+    detail: ShortText | None = None
+    since_utc: AwareDatetime
+
+
 class ServerInfo(Strict):
     protocol: Literal[1]
     build: Annotated[str, Field(max_length=64)]
@@ -326,6 +336,7 @@ class ServerState(Strict):
     server: ServerInfo
     receivers: dict[ReceiverId, ReceiverState] = {}
     channels: dict[ChannelId, ChannelState] = {}
+    jobs: dict[JobId, JobState] = {}
     ledger: LedgerSummary
 
 

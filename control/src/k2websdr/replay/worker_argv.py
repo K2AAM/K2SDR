@@ -36,9 +36,12 @@ class WorkerIdentity:
 
 
 def replay_argv(worker_bin: str | Path, rec: Recording, ident: WorkerIdentity, *, ctl_fd: int, data_fd: int,
-                frame_samples: int = 4096, paced: bool = False, loop: bool = False) -> list[str]:
+                frame_samples: int = 4096, paced: bool = False, loop: bool = False,
+                capture_gen_start: int = 1) -> list[str]:
     if not 1 <= frame_samples <= 1 << 20:
         raise ValueError("frame_samples out of range")
+    if not 1 <= capture_gen_start <= 2**53 - 1:
+        raise ValueError("capture_gen_start out of range")
     argv = [
         str(worker_bin),
         "--device-id", ident.device_id,
@@ -53,6 +56,7 @@ def replay_argv(worker_bin: str | Path, rec: Recording, ident: WorkerIdentity, *
         "--rate-hz", str(rec.sample_rate_hz),
         "--origin-hz", str(rec.freq_origin_hz),
         "--frame-samples", str(frame_samples),
+        "--capture-gen-start", str(capture_gen_start),
     ]
     for d in rec.discontinuities:
         argv += ["--discontinuity", f"{d.sample_index}:{d.gap_samples}" if d.gap_samples else str(d.sample_index)]
