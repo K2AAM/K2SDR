@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from sigmf_util import load_meta, load_samples, segments  # noqa: E402
+from sigmf_util import gap_free_runs, load_meta, load_samples, segments  # noqa: E402
 
 
 MIN_SNR_DB = 20.0   # below this a "carrier" may be a noise peak: reported, never used as a calibration
@@ -58,8 +58,11 @@ def carrier(base: Path, expects: list[int]) -> list[dict]:
     rate = int(meta["global"]["core:sample_rate"])
     out = []
     for start, end, f0 in segments(meta, len(x)):
-        seg = x[start + (end - start) // 2:end]
-        seg = seg[: min(len(seg), rate * 4)]                  # up to 4 s of the stable part
+        # Up to 4 s of the stable second half, from its longest gap-free run: a gap is
+        # a phase jump that would smear the carrier peak.
+        run = max(gap_free_runs(meta, start + (end - start) // 2, end), key=lambda r: r[1] - r[0])
+        seg = x[run[0]:run[1]]
+        seg = seg[: min(len(seg), rate * 4)]
         for e in expects:
             off = e - f0
             if abs(off) >= rate / 2:

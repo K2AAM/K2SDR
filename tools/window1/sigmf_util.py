@@ -40,3 +40,19 @@ def segments(meta: dict, n_samples: int) -> list[tuple[int, int, int]]:
         end = caps[i + 1]["core:sample_start"] if i + 1 < len(caps) else n_samples
         out.append((int(c["core:sample_start"]), int(end), int(c["core:frequency"])))
     return out
+
+
+def discontinuities(meta: dict) -> list[tuple[int, int]]:
+    """(file sample index, samples lost there) for every annotated gap."""
+    out = []
+    for a in meta.get("annotations", []):
+        if a.get("core:label") == "discontinuity" or "k2websdr:gap_samples" in a:
+            out.append((int(a["core:sample_start"]), int(a.get("k2websdr:gap_samples", 0))))
+    return sorted(out)
+
+
+def gap_free_runs(meta: dict, start: int, end: int) -> list[tuple[int, int]]:
+    """Split [start, end) at annotated gaps; samples on each side of a gap are not contiguous."""
+    cuts = [s for s, _ in discontinuities(meta) if start < s < end]
+    edges = [start, *cuts, end]
+    return [(a, b) for a, b in zip(edges, edges[1:]) if b > a]
