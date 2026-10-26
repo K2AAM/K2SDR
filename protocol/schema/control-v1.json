@@ -1,0 +1,1645 @@
+{
+  "$defs": {
+    "Ack": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "rev": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rev"
+        },
+        "status": {
+          "enum": [
+            "accepted",
+            "rejected"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "type": {
+          "const": "ack",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "status"
+      ],
+      "title": "Ack",
+      "type": "object"
+    },
+    "Acquisition": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "state": {
+          "enum": [
+            "disabled",
+            "stopped",
+            "starting",
+            "running",
+            "failed",
+            "external_busy"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "Acquisition",
+      "type": "object"
+    },
+    "AntennaPort": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[A-Za-z0-9_-]{1,16}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 64,
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "title": "AntennaPort",
+      "type": "object"
+    },
+    "Capabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "antennas": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AntennaPort"
+          },
+          "title": "Antennas",
+          "type": "array"
+        },
+        "freq_range_hz": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "maximum": 10000000000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "maximum": 10000000000,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Freq Range Hz"
+        },
+        "sample_format": {
+          "anyOf": [
+            {
+              "enum": [
+                "ci16",
+                "cf32",
+                "ri16",
+                "rf32"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sample Format"
+        },
+        "sample_rates_hz": {
+          "default": [],
+          "items": {
+            "exclusiveMinimum": 0,
+            "maximum": 4294967295,
+            "type": "integer"
+          },
+          "title": "Sample Rates Hz",
+          "type": "array"
+        }
+      },
+      "title": "Capabilities",
+      "type": "object"
+    },
+    "Capture": {
+      "additionalProperties": false,
+      "properties": {
+        "antenna": {
+          "$ref": "#/$defs/FieldState_str_"
+        },
+        "center_hz": {
+          "$ref": "#/$defs/FieldState_int_"
+        },
+        "sample_rate_hz": {
+          "$ref": "#/$defs/FieldState_int_"
+        }
+      },
+      "required": [
+        "center_hz",
+        "sample_rate_hz",
+        "antenna"
+      ],
+      "title": "Capture",
+      "type": "object"
+    },
+    "ChannelClose": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/ChannelCloseArgs"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "channel.close",
+          "title": "Op",
+          "type": "string"
+        },
+        "type": {
+          "const": "cmd",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "op",
+        "args"
+      ],
+      "title": "ChannelClose",
+      "type": "object"
+    },
+    "ChannelCloseArgs": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "pattern": "^ch_[a-z0-9]{1,32}$",
+          "title": "Channel",
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel"
+      ],
+      "title": "ChannelCloseArgs",
+      "type": "object"
+    },
+    "ChannelOpen": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/ChannelOpenArgs"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "channel.open",
+          "title": "Op",
+          "type": "string"
+        },
+        "type": {
+          "const": "cmd",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "op",
+        "args"
+      ],
+      "title": "ChannelOpen",
+      "type": "object"
+    },
+    "ChannelOpenArgs": {
+      "additionalProperties": false,
+      "properties": {
+        "frequency_hz": {
+          "maximum": 10000000000,
+          "minimum": 0,
+          "title": "Frequency Hz",
+          "type": "integer"
+        },
+        "mode": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
+          "title": "Mode",
+          "type": "string"
+        },
+        "receiver": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "title": "Receiver",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiver",
+        "frequency_hz",
+        "mode"
+      ],
+      "title": "ChannelOpenArgs",
+      "type": "object"
+    },
+    "ChannelOwner": {
+      "additionalProperties": false,
+      "properties": {
+        "job": {
+          "anyOf": [
+            {
+              "pattern": "^job_[a-z0-9-]{1,48}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job"
+        },
+        "session": {
+          "anyOf": [
+            {
+              "pattern": "^s_[A-Za-z0-9]{1,64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session"
+        }
+      },
+      "title": "ChannelOwner",
+      "type": "object"
+    },
+    "ChannelState": {
+      "additionalProperties": false,
+      "properties": {
+        "channel_gen": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Channel Gen",
+          "type": "integer"
+        },
+        "decoder_taps": {
+          "default": [],
+          "items": {
+            "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
+            "type": "string"
+          },
+          "title": "Decoder Taps",
+          "type": "array"
+        },
+        "frequency_hz": {
+          "maximum": 10000000000,
+          "minimum": 0,
+          "title": "Frequency Hz",
+          "type": "integer"
+        },
+        "mode": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
+          "title": "Mode",
+          "type": "string"
+        },
+        "owner": {
+          "$ref": "#/$defs/ChannelOwner"
+        },
+        "receiver": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "title": "Receiver",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiver",
+        "owner",
+        "frequency_hz",
+        "mode",
+        "channel_gen"
+      ],
+      "title": "ChannelState",
+      "type": "object"
+    },
+    "ChannelTune": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/ChannelTuneArgs"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "channel.tune",
+          "title": "Op",
+          "type": "string"
+        },
+        "type": {
+          "const": "cmd",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "op",
+        "args"
+      ],
+      "title": "ChannelTune",
+      "type": "object"
+    },
+    "ChannelTuneArgs": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "pattern": "^ch_[a-z0-9]{1,32}$",
+          "title": "Channel",
+          "type": "string"
+        },
+        "frequency_hz": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frequency Hz"
+        },
+        "if_channel_gen": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "If Channel Gen"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mode"
+        }
+      },
+      "required": [
+        "channel"
+      ],
+      "title": "ChannelTuneArgs",
+      "type": "object"
+    },
+    "ClientMessage": {
+      "discriminator": {
+        "mapping": {
+          "channel.close": "#/$defs/ChannelClose",
+          "channel.open": "#/$defs/ChannelOpen",
+          "channel.tune": "#/$defs/ChannelTune",
+          "receiver.claim": "#/$defs/ReceiverClaim",
+          "receiver.release": "#/$defs/ReceiverRelease",
+          "receiver.set_antenna": "#/$defs/ReceiverSetAntenna",
+          "receiver.set_capture": "#/$defs/ReceiverSetCapture",
+          "session.hello": "#/$defs/SessionHello",
+          "state.subscribe": "#/$defs/StateSubscribe"
+        },
+        "propertyName": "op"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/SessionHello"
+        },
+        {
+          "$ref": "#/$defs/StateSubscribe"
+        },
+        {
+          "$ref": "#/$defs/ReceiverClaim"
+        },
+        {
+          "$ref": "#/$defs/ReceiverRelease"
+        },
+        {
+          "$ref": "#/$defs/ReceiverSetCapture"
+        },
+        {
+          "$ref": "#/$defs/ReceiverSetAntenna"
+        },
+        {
+          "$ref": "#/$defs/ChannelOpen"
+        },
+        {
+          "$ref": "#/$defs/ChannelTune"
+        },
+        {
+          "$ref": "#/$defs/ChannelClose"
+        }
+      ]
+    },
+    "EmptyArgs": {
+      "additionalProperties": false,
+      "properties": {},
+      "title": "EmptyArgs",
+      "type": "object"
+    },
+    "ErrorCode": {
+      "enum": [
+        "E_SCHEMA",
+        "E_PAYLOAD_TOO_LARGE",
+        "E_UNSUPPORTED_VERSION",
+        "E_UNAUTHENTICATED",
+        "E_FORBIDDEN",
+        "E_NOT_LEASE_HOLDER",
+        "E_UNKNOWN_RECEIVER",
+        "E_UNKNOWN_CHANNEL",
+        "E_OUT_OF_RANGE",
+        "E_UNSUPPORTED",
+        "E_MODE_UNAVAILABLE",
+        "E_BUSY",
+        "E_DEVICE_EXTERNAL",
+        "E_DEVICE_FAILED",
+        "E_TIMEOUT",
+        "E_STALE_PRECONDITION",
+        "E_RATE_LIMITED",
+        "E_INTERNAL"
+      ],
+      "title": "ErrorCode",
+      "type": "string"
+    },
+    "ErrorMsg": {
+      "additionalProperties": false,
+      "description": "A message the server could not attribute to a command (e.g. unparseable input).",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "type": {
+          "const": "error",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "code"
+      ],
+      "title": "ErrorMsg",
+      "type": "object"
+    },
+    "FieldState_int_": {
+      "additionalProperties": false,
+      "properties": {
+        "applied": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Applied"
+        },
+        "cmd": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cmd"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "requested": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested"
+        },
+        "status": {
+          "default": "idle",
+          "enum": [
+            "idle",
+            "pending",
+            "applied",
+            "failed",
+            "unsupported"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "verified": {
+          "default": "none",
+          "enum": [
+            "none",
+            "driver_readback",
+            "rf_evidence"
+          ],
+          "title": "Verified",
+          "type": "string"
+        }
+      },
+      "title": "FieldState[int]",
+      "type": "object"
+    },
+    "FieldState_str_": {
+      "additionalProperties": false,
+      "properties": {
+        "applied": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Applied"
+        },
+        "cmd": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cmd"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "requested": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested"
+        },
+        "status": {
+          "default": "idle",
+          "enum": [
+            "idle",
+            "pending",
+            "applied",
+            "failed",
+            "unsupported"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "verified": {
+          "default": "none",
+          "enum": [
+            "none",
+            "driver_readback",
+            "rf_evidence"
+          ],
+          "title": "Verified",
+          "type": "string"
+        }
+      },
+      "title": "FieldState[str]",
+      "type": "object"
+    },
+    "Lease": {
+      "additionalProperties": false,
+      "properties": {
+        "holder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LeaseHolder"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "since_utc": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since Utc"
+        },
+        "takeover_policy": {
+          "default": "deny",
+          "enum": [
+            "deny",
+            "preempt_with_notice"
+          ],
+          "title": "Takeover Policy",
+          "type": "string"
+        }
+      },
+      "title": "Lease",
+      "type": "object"
+    },
+    "LeaseHolder": {
+      "additionalProperties": false,
+      "properties": {
+        "job": {
+          "anyOf": [
+            {
+              "pattern": "^job_[a-z0-9-]{1,48}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job"
+        },
+        "kind": {
+          "enum": [
+            "operator",
+            "job"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "principal": {
+          "maxLength": 128,
+          "title": "Principal",
+          "type": "string"
+        },
+        "session": {
+          "anyOf": [
+            {
+              "pattern": "^s_[A-Za-z0-9]{1,64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session"
+        }
+      },
+      "required": [
+        "kind",
+        "principal"
+      ],
+      "title": "LeaseHolder",
+      "type": "object"
+    },
+    "LedgerSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "default": [],
+          "items": {
+            "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
+            "type": "string"
+          },
+          "title": "Available",
+          "type": "array"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "title": "LedgerSummary",
+      "type": "object"
+    },
+    "Patch": {
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Base",
+          "type": "integer"
+        },
+        "ops": {
+          "items": {
+            "$ref": "#/$defs/PatchOp"
+          },
+          "minItems": 1,
+          "title": "Ops",
+          "type": "array"
+        },
+        "rev": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Rev",
+          "type": "integer"
+        },
+        "type": {
+          "const": "patch",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "base",
+        "rev",
+        "ops"
+      ],
+      "title": "Patch",
+      "type": "object"
+    },
+    "PatchOp": {
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "enum": [
+            "add",
+            "replace",
+            "remove"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 512,
+          "pattern": "^(/([^/~]|~[01])*)+$",
+          "title": "Path",
+          "type": "string"
+        },
+        "value": {
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "op",
+        "path"
+      ],
+      "title": "PatchOp",
+      "type": "object"
+    },
+    "ReceiverClaim": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/ReceiverClaimArgs"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "receiver.claim",
+          "title": "Op",
+          "type": "string"
+        },
+        "type": {
+          "const": "cmd",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "op",
+        "args"
+      ],
+      "title": "ReceiverClaim",
+      "type": "object"
+    },
+    "ReceiverClaimArgs": {
+      "additionalProperties": false,
+      "properties": {
+        "receiver": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "title": "Receiver",
+          "type": "string"
+        },
+        "takeover": {
+          "default": "deny",
+          "enum": [
+            "deny",
+            "preempt_with_notice"
+          ],
+          "title": "Takeover",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiver"
+      ],
+      "title": "ReceiverClaimArgs",
+      "type": "object"
+    },
+    "ReceiverRelease": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/ReceiverReleaseArgs"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "receiver.release",
+          "title": "Op",
+          "type": "string"
+        },
+        "type": {
+          "const": "cmd",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "op",
+        "args"
+      ],
+      "title": "ReceiverRelease",
+      "type": "object"
+    },
+    "ReceiverReleaseArgs": {
+      "additionalProperties": false,
+      "properties": {
+        "receiver": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "title": "Receiver",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiver"
+      ],
+      "title": "ReceiverReleaseArgs",
+      "type": "object"
+    },
+    "ReceiverSetAntenna": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/ReceiverSetAntennaArgs"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "receiver.set_antenna",
+          "title": "Op",
+          "type": "string"
+        },
+        "type": {
+          "const": "cmd",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "op",
+        "args"
+      ],
+      "title": "ReceiverSetAntenna",
+      "type": "object"
+    },
+    "ReceiverSetAntennaArgs": {
+      "additionalProperties": false,
+      "properties": {
+        "if_capture_gen": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "If Capture Gen"
+        },
+        "port": {
+          "pattern": "^[A-Za-z0-9_-]{1,16}$",
+          "title": "Port",
+          "type": "string"
+        },
+        "receiver": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "title": "Receiver",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiver",
+        "port"
+      ],
+      "title": "ReceiverSetAntennaArgs",
+      "type": "object"
+    },
+    "ReceiverSetCapture": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/ReceiverSetCaptureArgs"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "receiver.set_capture",
+          "title": "Op",
+          "type": "string"
+        },
+        "type": {
+          "const": "cmd",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "op",
+        "args"
+      ],
+      "title": "ReceiverSetCapture",
+      "type": "object"
+    },
+    "ReceiverSetCaptureArgs": {
+      "additionalProperties": false,
+      "properties": {
+        "center_hz": {
+          "anyOf": [
+            {
+              "maximum": 10000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Center Hz"
+        },
+        "if_capture_gen": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "If Capture Gen"
+        },
+        "receiver": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "title": "Receiver",
+          "type": "string"
+        },
+        "sample_rate_hz": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 4294967295,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sample Rate Hz"
+        }
+      },
+      "required": [
+        "receiver"
+      ],
+      "title": "ReceiverSetCaptureArgs",
+      "type": "object"
+    },
+    "ReceiverState": {
+      "additionalProperties": false,
+      "properties": {
+        "acquisition": {
+          "$ref": "#/$defs/Acquisition"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/Capabilities"
+        },
+        "capture": {
+          "$ref": "#/$defs/Capture"
+        },
+        "capture_gen": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Capture Gen",
+          "type": "integer"
+        },
+        "driver": {
+          "pattern": "^[a-z0-9_]{1,32}$",
+          "title": "Driver",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 64,
+          "title": "Label",
+          "type": "string"
+        },
+        "lease": {
+          "$ref": "#/$defs/Lease"
+        }
+      },
+      "required": [
+        "label",
+        "driver",
+        "acquisition",
+        "lease",
+        "capture_gen",
+        "capture",
+        "capabilities"
+      ],
+      "title": "ReceiverState",
+      "type": "object"
+    },
+    "Result": {
+      "additionalProperties": false,
+      "properties": {
+        "capture_gen": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Capture Gen"
+        },
+        "channel": {
+          "anyOf": [
+            {
+              "pattern": "^ch_[a-z0-9]{1,32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channel"
+        },
+        "channel_gen": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channel Gen"
+        },
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "rev": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Rev",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "applied",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "type": {
+          "const": "result",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "status",
+        "rev"
+      ],
+      "title": "Result",
+      "type": "object"
+    },
+    "ServerInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "build": {
+          "maxLength": 64,
+          "title": "Build",
+          "type": "string"
+        },
+        "exposure": {
+          "enum": [
+            "loopback",
+            "private_network",
+            "public"
+          ],
+          "title": "Exposure",
+          "type": "string"
+        },
+        "protocol": {
+          "const": 1,
+          "title": "Protocol",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "protocol",
+        "build",
+        "exposure"
+      ],
+      "title": "ServerInfo",
+      "type": "object"
+    },
+    "ServerMessage": {
+      "discriminator": {
+        "mapping": {
+          "ack": "#/$defs/Ack",
+          "error": "#/$defs/ErrorMsg",
+          "patch": "#/$defs/Patch",
+          "result": "#/$defs/Result",
+          "snapshot": "#/$defs/Snapshot"
+        },
+        "propertyName": "type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Ack"
+        },
+        {
+          "$ref": "#/$defs/Result"
+        },
+        {
+          "$ref": "#/$defs/ErrorMsg"
+        },
+        {
+          "$ref": "#/$defs/Snapshot"
+        },
+        {
+          "$ref": "#/$defs/Patch"
+        }
+      ]
+    },
+    "ServerState": {
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "default": {},
+          "patternProperties": {
+            "^ch_[a-z0-9]{1,32}$": {
+              "$ref": "#/$defs/ChannelState"
+            }
+          },
+          "title": "Channels",
+          "type": "object"
+        },
+        "ledger": {
+          "$ref": "#/$defs/LedgerSummary"
+        },
+        "receivers": {
+          "default": {},
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9._-]{0,63}$": {
+              "$ref": "#/$defs/ReceiverState"
+            }
+          },
+          "title": "Receivers",
+          "type": "object"
+        },
+        "server": {
+          "$ref": "#/$defs/ServerInfo"
+        }
+      },
+      "required": [
+        "server",
+        "ledger"
+      ],
+      "title": "ServerState",
+      "type": "object"
+    },
+    "SessionHello": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/SessionHelloArgs"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "session.hello",
+          "title": "Op",
+          "type": "string"
+        },
+        "type": {
+          "const": "cmd",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "op",
+        "args"
+      ],
+      "title": "SessionHello",
+      "type": "object"
+    },
+    "SessionHelloArgs": {
+      "additionalProperties": false,
+      "properties": {
+        "client": {
+          "maxLength": 64,
+          "title": "Client",
+          "type": "string"
+        }
+      },
+      "required": [
+        "client"
+      ],
+      "title": "SessionHelloArgs",
+      "type": "object"
+    },
+    "Snapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "rev": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Rev",
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/ServerState"
+        },
+        "type": {
+          "const": "snapshot",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "rev",
+        "state"
+      ],
+      "title": "Snapshot",
+      "type": "object"
+    },
+    "StateSubscribe": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/EmptyArgs"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "state.subscribe",
+          "title": "Op",
+          "type": "string"
+        },
+        "type": {
+          "const": "cmd",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "op",
+        "args"
+      ],
+      "title": "StateSubscribe",
+      "type": "object"
+    }
+  },
+  "$id": "urn:k2websdr:control:v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Generated from k2websdr.protocol.models. Do not edit by hand.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ClientMessage"
+    },
+    {
+      "$ref": "#/$defs/ServerMessage"
+    }
+  ],
+  "title": "K2AAM WebSDR control protocol v1"
+}

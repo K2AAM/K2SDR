@@ -1,0 +1,27 @@
+[project]
+name = "k2websdr"
+version = "0.0.0"
+description = "K2AAM WebSDR control service"
+# Covers Debian 12 (Python 3.11) and Debian 13 (Python 3.13). Narrow once the
+# Optiplex release is confirmed from /etc/os-release.
+requires-python = ">=3.11"
+license = { text = "All rights reserved (license pending)" }
+dependencies = [
+    "pydantic==2.14.1",  # exact: generated schema output depends on it,
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+]
+
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/k2websdr"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
