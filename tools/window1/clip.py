@@ -7,6 +7,11 @@ Shifts the chosen absolute center to 0 Hz, low-pass filters, decimates by an
 integer factor and writes ci16_le SigMF with core:sha512. The output's
 core:frequency is the chosen center (exact: integer-Hz shift of integer-rate
 data). Provenance (source sha512, offsets) goes into core:description.
+
+A clip must be one contiguous stretch of signal: it is refused if it would cross
+an annotated discontinuity (lost samples), a capture boundary (retune), or the
+end of the recording. Filtering across a gap would smear the jump into the
+fixture, and an unannotated gap would make it lie about continuity.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from sigmf_util import load_meta, load_samples, segments  # noqa: E402
+from sigmf_util import discontinuities, load_meta, load_samples, segments  # noqa: E402
 
 
 def lowpass(num_taps: int, cutoff: float) -> np.ndarray:
@@ -47,7 +52,16 @@ def main() -> int:
     seg = next((s for s in segs if s[0] <= start < s[1]), None)
     if seg is None:
         raise SystemExit("start outside recording")
-    stop = min(seg[1], start + int(a.seconds * src_rate))
+    stop = start + int(a.seconds * src_rate)
+    if stop > seg[1]:
+        where = "the end of the recording" if seg is segs[-1] else f"a retune at sample {seg[1]}"
+        raise SystemExit(f"clip {a.start_s}s+{a.seconds}s runs past {where}; choose a shorter clip")
+    gaps = [(s, n) for s, n in discontinuities(meta) if start < s < stop]
+    if gaps:
+        s0, n0 = gaps[0]
+        raise SystemExit(f"clip {a.start_s}s+{a.seconds}s crosses {len(gaps)} discontinuit"
+                         f"{'y' if len(gaps) == 1 else 'ies'} (first at sample {s0}, {n0} samples lost); "
+                         "choose a clip inside a gap-free stretch")
     shift = a.center - seg[2]
     if abs(shift) + a.rate / 2 > src_rate / 2:
         raise SystemExit("requested band is outside the recording")

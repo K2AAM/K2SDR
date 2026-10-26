@@ -16,6 +16,13 @@
 // `record` writes BASE.sigmf-data (cf32_le, the library's native format) and
 // BASE.sigmf-meta (SigMF 1.2.6). core:sha512 is added afterwards by
 // tools/window1/finalize.py so the hot path never hashes.
+//
+// Exit codes: 0 ok, 2 open failed, 3 configuration/start failed, 4 device lost
+// while streaming, 5 recording failed (a data or metadata write, flush or close
+// failed; the summary carries "recording_ok":false and the error). 5 wins over 4.
+// Sample loss is annotated as a discontinuity: library drops (dropped_samples is
+// per callback in libairspyhf 1.6.8, not cumulative) and blocks this tool had to
+// discard because the writer fell behind.
 
 #include <airspyhf.h>
 
@@ -259,18 +266,21 @@ int cmd_busy_check(const Opts&) {
 
 struct Block {
     std::vector<airspyhf_complex_float_t> samples;
-    uint64_t dropped_before = 0;  // samples the library reports lost before this block
+    uint64_t dropped_before = 0;  // samples lost (library + queue overflow) just before this block
 };
 
 struct StreamState {
     std::atomic<uint64_t> callbacks{0}, samples{0}, dropped{0}, max_gap_ns{0}, last_cb_ns{0};
-    std::atomic<uint64_t> queue_overflow_blocks{0};
+    std::atomic<uint64_t> queue_overflow_blocks{0}, queue_overflow_samples{0};
     bool recording = false;
     std::mutex mu;
     std::condition_variable cv;
     std::deque<Block> queue;
     size_t queue_limit = 512;
-    uint64_t prev_lib_dropped = 0;  // touched only by the callback thread
+    // Guarded by mu. File-space position: samples handed to the writer so far, and
+    // loss not yet attached to a block (it is annotated on the next queued block).
+    uint64_t enqueued = 0;
+    uint64_t pending_gap = 0;
 };
 
 int callback(airspyhf_transfer_t* t) {
@@ -285,18 +295,24 @@ int callback(airspyhf_transfer_t* t) {
     }
     st->callbacks++;
     st->samples += static_cast<uint64_t>(t->sample_count);
-    // dropped_samples is cumulative in the library; record the increase per block.
-    uint64_t newly = t->dropped_samples >= st->prev_lib_dropped ? t->dropped_samples - st->prev_lib_dropped : 0;
-    st->prev_lib_dropped = t->dropped_samples;
-    st->dropped += newly;
+    // libairspyhf 1.6.8 reports the samples lost immediately before *this* block
+    // (dropped_buffers is reset each time a buffer is queued): a per-callback count.
+    const uint64_t lost = t->dropped_samples;
+    st->dropped += lost;
     if (st->recording) {
-        Block b;
-        b.samples.assign(t->samples, t->samples + t->sample_count);
-        b.dropped_before = newly;
         std::lock_guard<std::mutex> lk(st->mu);
+        st->pending_gap += lost;
         if (st->queue.size() >= st->queue_limit) {
+            // Writer behind: this block is lost too; it becomes part of the next gap.
             st->queue_overflow_blocks++;
+            st->queue_overflow_samples += static_cast<uint64_t>(t->sample_count);
+            st->pending_gap += static_cast<uint64_t>(t->sample_count);
         } else {
+            Block b;
+            b.samples.assign(t->samples, t->samples + t->sample_count);
+            b.dropped_before = st->pending_gap;
+            st->pending_gap = 0;
+            st->enqueued += b.samples.size();
             st->queue.push_back(std::move(b));
         }
         st->cv.notify_one();
@@ -316,6 +332,58 @@ struct Annotation {
     std::string json;  // body without braces
 };
 
+// Records the first write failure (later ones are consequences of it).
+struct WriteError {
+    std::mutex mu;
+    std::string what;
+    void set(const std::string& step, int err) {
+        std::lock_guard<std::mutex> lk(mu);
+        if (what.empty()) what = step + ": " + std::strerror(err ? err : EIO);
+    }
+    bool failed() {
+        std::lock_guard<std::mutex> lk(mu);
+        return !what.empty();
+    }
+};
+
+// Writes the SigMF metadata; returns false (and sets err) on any write, flush or close failure.
+template <class Captures, class Annotations>
+bool write_meta(const Opts& o, const std::string& started, const Captures& captures, const Annotations& annotations,
+                WriteError& err) {
+    const std::string path = o.out + ".sigmf-meta";
+    FILE* meta = std::fopen(path.c_str(), "w");
+    if (!meta) {
+        err.set("open " + path, errno);
+        return false;
+    }
+    std::fprintf(meta,
+                 "{\n  \"global\": {\n    \"core:datatype\": \"cf32_le\",\n    \"core:sample_rate\": %llu,\n"
+                 "    \"core:version\": \"1.2.6\",\n    \"core:recorder\": \"ksdr-airspyhf-probe (libairspyhf %s)\",\n"
+                 "    \"core:hw\": \"Airspy HF+ serial %s\",\n"
+                 "    \"core:description\": \"Window 1 recording; settings: hf_agc=%d hf_agc_threshold=%d hf_att=%d "
+                 "hf_lna=%d lib_dsp=%d (-1 = library default)\",\n"
+                 "    \"core:extensions\": [{\"name\": \"k2websdr\", \"version\": \"1.0.0\", \"optional\": false}]\n  },\n"
+                 "  \"captures\": [\n",
+                 static_cast<unsigned long long>(o.rate), AIRSPYHF_VERSION, serial_hex(o.serial).c_str(), o.hf_agc,
+                 o.hf_agc_threshold, o.hf_att, o.hf_lna, o.lib_dsp);
+    for (size_t i = 0; i < captures.size(); ++i) {
+        std::fprintf(meta, "    {\"core:sample_start\": %llu, \"core:frequency\": %llu, \"core:datetime\": \"%s\"}%s\n",
+                     static_cast<unsigned long long>(captures[i].sample),
+                     static_cast<unsigned long long>(captures[i].freq),
+                     i == 0 ? started.c_str() : captures[i].at.c_str(), i + 1 < captures.size() ? "," : "");
+    }
+    std::fprintf(meta, "  ],\n  \"annotations\": [\n");
+    for (size_t i = 0; i < annotations.size(); ++i)
+        std::fprintf(meta, "    {%s}%s\n", annotations[i].json.c_str(), i + 1 < annotations.size() ? "," : "");
+    std::fprintf(meta, "  ]\n}\n");
+    bool ok = true;
+    if (std::ferror(meta)) { err.set("write " + path, errno); ok = false; }
+    if (std::fflush(meta) != 0) { err.set("flush " + path, errno); ok = false; }
+    if (fsync(fileno(meta)) != 0 && errno != EINVAL) { err.set("fsync " + path, errno); ok = false; }
+    if (std::fclose(meta) != 0) { err.set("close " + path, errno); ok = false; }
+    return ok;
+}
+
 int run_stream(const Opts& o, bool record) {
     airspyhf_device_t* dev = open_or_die(o);
     configure_or_die(dev, o);
@@ -323,17 +391,21 @@ int run_stream(const Opts& o, bool record) {
     st.recording = record;
 
     FILE* data = nullptr;
+    std::string data_path;
     std::vector<Annotation> annotations;
     struct Capture { uint64_t sample; uint64_t freq; std::string at; };
     std::vector<Capture> captures{{0, o.freq, ""}};
     uint64_t written = 0;
+    WriteError werr;
     std::thread writer;
     std::atomic<bool> writer_stop{false};
     if (record) {
         if (o.out.empty()) die("--out is required for record");
-        data = std::fopen((o.out + ".sigmf-data").c_str(), "wb");
+        data_path = o.out + ".sigmf-data";
+        data = std::fopen(data_path.c_str(), "wb");
         if (!data) die("cannot open output file");
         writer = std::thread([&] {
+            bool failed = false;
             for (;;) {
                 std::unique_lock<std::mutex> lk(st.mu);
                 st.cv.wait(lk, [&] { return !st.queue.empty() || writer_stop.load(); });
@@ -341,6 +413,7 @@ int run_stream(const Opts& o, bool record) {
                 Block b = std::move(st.queue.front());
                 st.queue.pop_front();
                 lk.unlock();
+                if (failed) continue;  // keep draining so the callback never stalls
                 if (b.dropped_before && written) {
                     char buf[160];
                     std::snprintf(buf, sizeof buf,
@@ -349,8 +422,15 @@ int run_stream(const Opts& o, bool record) {
                                   static_cast<unsigned long long>(written), static_cast<unsigned long long>(b.dropped_before));
                     annotations.push_back({written, buf});
                 }
-                std::fwrite(b.samples.data(), sizeof(airspyhf_complex_float_t), b.samples.size(), data);
-                written += b.samples.size();
+                errno = 0;
+                size_t n = std::fwrite(b.samples.data(), sizeof(airspyhf_complex_float_t), b.samples.size(), data);
+                written += n;  // only what the C library accepted
+                if (n != b.samples.size()) {
+                    werr.set("write " + data_path, errno);
+                    failed = true;
+                    std::printf("{\"event\":\"write_failed\",\"written_samples\":%llu}\n",
+                                static_cast<unsigned long long>(written));
+                }
             }
         });
     }
@@ -375,14 +455,20 @@ int run_stream(const Opts& o, bool record) {
         if (next_retune < o.retunes.size() && elapsed >= o.retunes[next_retune].at_s) {
             uint64_t at_sample = st.samples.load();
             uint64_t tc = mono_ns();
+            uint64_t at_file_sample = 0;
+            {
+                std::lock_guard<std::mutex> lk(st.mu);
+                at_file_sample = st.enqueued;  // file-space index: excludes lost samples
+            }
             int rr = airspyhf_set_freq(dev, static_cast<uint32_t>(o.retunes[next_retune].freq_hz));
             double call_ms = static_cast<double>(mono_ns() - tc) / 1e6;
             std::printf("{\"event\":\"retune\",\"freq_hz\":%llu,\"result\":%d,\"at_sample\":%llu,\"call_ms\":%.2f}\n",
                         static_cast<unsigned long long>(o.retunes[next_retune].freq_hz), rr,
                         static_cast<unsigned long long>(at_sample), call_ms);
-            if (record) {
-                // Sample index is approximate (counted at the call); settling is measured offline from here.
-                captures.push_back({at_sample, o.retunes[next_retune].freq_hz, utc_now_iso()});
+            if (record && rr == AIRSPYHF_SUCCESS) {
+                // A rejected retune leaves the device where it was, so it starts no new capture.
+                // Index is the file position when set_freq was called; settling is measured offline.
+                captures.push_back({at_file_sample, o.retunes[next_retune].freq_hz, utc_now_iso()});
             }
             ++next_retune;
         }
@@ -414,45 +500,38 @@ int run_stream(const Opts& o, bool record) {
     double cpu = cpu_seconds() - cpu0;
     double wall = static_cast<double>(t_end - t0) / 1e9;
     int close_r = airspyhf_close(dev);
+    bool recording_ok = true;
     if (record) {
         writer_stop = true;
         st.cv.notify_all();
         writer.join();
-        std::fclose(data);
-        FILE* meta = std::fopen((o.out + ".sigmf-meta").c_str(), "w");
-        if (!meta) die("cannot write metadata");
-        std::fprintf(meta,
-                     "{\n  \"global\": {\n    \"core:datatype\": \"cf32_le\",\n    \"core:sample_rate\": %llu,\n"
-                     "    \"core:version\": \"1.2.6\",\n    \"core:recorder\": \"ksdr-airspyhf-probe (libairspyhf %s)\",\n"
-                     "    \"core:hw\": \"Airspy HF+ serial %s\",\n"
-                     "    \"core:description\": \"Window 1 recording; settings: hf_agc=%d hf_agc_threshold=%d hf_att=%d "
-                     "hf_lna=%d lib_dsp=%d (-1 = library default)\",\n"
-                     "    \"core:extensions\": [{\"name\": \"k2websdr\", \"version\": \"1.0.0\", \"optional\": false}]\n  },\n"
-                     "  \"captures\": [\n",
-                     static_cast<unsigned long long>(o.rate), AIRSPYHF_VERSION, serial_hex(o.serial).c_str(), o.hf_agc,
-                     o.hf_agc_threshold, o.hf_att, o.hf_lna, o.lib_dsp);
-        for (size_t i = 0; i < captures.size(); ++i) {
-            std::fprintf(meta, "    {\"core:sample_start\": %llu, \"core:frequency\": %llu, \"core:datetime\": \"%s\"}%s\n",
-                         static_cast<unsigned long long>(captures[i].sample),
-                         static_cast<unsigned long long>(captures[i].freq),
-                         i == 0 ? started.c_str() : captures[i].at.c_str(), i + 1 < captures.size() ? "," : "");
+        if (std::fflush(data) != 0) werr.set("flush " + data_path, errno);
+        // EINVAL: the target cannot be synced at all (a pipe); that is not lost data.
+        if (fsync(fileno(data)) != 0 && errno != EINVAL) werr.set("fsync " + data_path, errno);
+        if (std::fclose(data) != 0) werr.set("close " + data_path, errno);
+        // Metadata is written only for complete data, so a failed recording can never
+        // pass for a valid SigMF pair.
+        if (!werr.failed()) write_meta(o, started, captures, annotations, werr);
+        recording_ok = !werr.failed();
+        if (!recording_ok) {
+            std::remove((o.out + ".sigmf-meta").c_str());
+            std::printf("{\"event\":\"recording_failed\",\"error\":\"%s\"}\n", json_escape(werr.what).c_str());
         }
-        std::fprintf(meta, "  ],\n  \"annotations\": [\n");
-        for (size_t i = 0; i < annotations.size(); ++i)
-            std::fprintf(meta, "    {%s}%s\n", annotations[i].json.c_str(), i + 1 < annotations.size() ? "," : "");
-        std::fprintf(meta, "  ]\n}\n");
-        std::fclose(meta);
     }
     std::printf("{\"event\":\"summary\",\"mode\":\"%s\",\"rate_hz\":%llu,\"freq_hz\":%llu,\"wall_s\":%.2f,"
                 "\"samples\":%llu,\"rate_measured\":%.1f,\"dropped_total\":%llu,\"callbacks\":%llu,"
                 "\"max_cb_gap_ms\":%.2f,\"cpu_s\":%.2f,\"cpu_pct\":%.1f,\"device_lost\":%s,\"stop_result\":%d,"
-                "\"close_result\":%d,\"written_samples\":%llu,\"queue_overflow_blocks\":%llu}\n",
+                "\"close_result\":%d,\"written_samples\":%llu,\"queue_overflow_blocks\":%llu,"
+                "\"queue_overflow_samples\":%llu,\"captures\":%zu,\"recording_ok\":%s}\n",
                 record ? "record" : "stream", static_cast<unsigned long long>(o.rate),
                 static_cast<unsigned long long>(o.freq), wall, static_cast<unsigned long long>(st.samples.load()),
                 static_cast<double>(st.samples.load()) / wall, static_cast<unsigned long long>(st.dropped.load()),
                 static_cast<unsigned long long>(st.callbacks.load()), static_cast<double>(st.max_gap_ns.load()) / 1e6,
                 cpu, 100.0 * cpu / wall, device_lost ? "true" : "false", stop_r, close_r,
-                static_cast<unsigned long long>(written), static_cast<unsigned long long>(st.queue_overflow_blocks.load()));
+                static_cast<unsigned long long>(written), static_cast<unsigned long long>(st.queue_overflow_blocks.load()),
+                static_cast<unsigned long long>(st.queue_overflow_samples.load()), record ? captures.size() : 0,
+                record ? (recording_ok ? "true" : "false") : "null");
+    if (!recording_ok) return 5;
     return device_lost ? 4 : 0;
 }
 
@@ -461,6 +540,7 @@ int run_stream(const Opts& o, bool record) {
 int main(int argc, char** argv) {
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
+    std::signal(SIGXFSZ, SIG_IGN);  // a file-size limit must surface as a write error (EFBIG), not kill us
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     Opts o = parse(argc, argv);
     if (o.cmd == "info") return cmd_info(o);

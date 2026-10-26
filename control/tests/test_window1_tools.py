@@ -141,15 +141,170 @@ def test_clip_produces_a_loadable_fixture_with_the_tone_where_expected(retune_re
     assert abs(f - 1000) < 50                       # 10.005 MHz tone at +1 kHz from the 10.004 MHz center
 
 
+# --------------------------------------------------------------- review fixes (PR #14 follow-up)
+
+def test_record_reports_disk_write_failure_and_leaves_no_metadata(tmp_path):
+    import resource
+
+    base = tmp_path / "full"
+    limit = 100 * 1024
+
+    def small_files():
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+
+    r = subprocess.run([str(MOCK), "record", "--serial", SERIAL, "--freq", "10000000", "--rate", "192000",
+                        "--seconds", "1", "--out", str(base)], capture_output=True, text=True, timeout=30,
+                       preexec_fn=small_files)
+    out = [json.loads(x) for x in r.stdout.splitlines() if x.startswith("{")]
+    assert r.returncode == 5, r.stdout
+    (summ,) = events(out, "summary")
+    assert summ["recording_ok"] is False
+    assert summ["written_samples"] * 8 <= limit < summ["samples"] * 8      # never claims unwritten samples
+    assert "File too large" in events(out, "recording_failed")[0]["error"]
+    assert not Path(str(base) + ".sigmf-meta").exists()                  # cannot pass for a valid recording
+
+
+def test_consecutive_library_drops_are_per_callback_not_cumulative(tmp_path):
+    # libairspyhf 1.6.8 reports the loss before each block; three losses in a row must all count.
+    pattern = {"MOCK_DROP_AT_S": "0.5", "MOCK_DROP_PATTERN": "1000,1000,500"}
+    code, out = probe("stream", "--serial", SERIAL, "--freq", "10000000", "--rate", "192000", "--seconds", "1",
+                      env=pattern)
+    assert code == 0 and events(out, "summary")[0]["dropped_total"] == 2500
+    base = tmp_path / "drops"
+    code, out = probe("record", "--serial", SERIAL, "--freq", "10000000", "--rate", "192000", "--seconds", "1",
+                      "--out", str(base), env=pattern)
+    assert code == 0 and events(out, "summary")[0]["dropped_total"] == 2500
+    ann = json.loads(Path(str(base) + ".sigmf-meta").read_text())["annotations"]
+    assert [a["k2websdr:gap_samples"] for a in ann] == [1000, 1000, 500]
+    assert ann[1]["core:sample_start"] - ann[0]["core:sample_start"] == 1024   # one block apart
+
+
+def test_writer_overflow_is_counted_and_annotated_as_a_gap(tmp_path):
+    """A stalled disk (here: a pipe nobody reads for 1.5 s) must leave an annotated gap, not a silent splice."""
+    import threading
+    import time
+
+    base = tmp_path / "slow"
+    fifo = Path(str(base) + ".sigmf-data")
+    os.mkfifo(fifo)
+    got = [0]
+
+    def reader():
+        with open(fifo, "rb") as f:
+            time.sleep(1.5)
+            while b := f.read(1 << 20):
+                got[0] += len(b)
+
+    t = threading.Thread(target=reader)
+    t.start()
+    code, out = probe("record", "--serial", SERIAL, "--freq", "10000000", "--rate", "912000", "--seconds", "3",
+                      "--out", str(base))
+    t.join(30)
+    (summ,) = events(out, "summary")
+    assert code == 0 and summ["recording_ok"] is True
+    assert summ["queue_overflow_samples"] > 0
+    assert summ["written_samples"] + summ["queue_overflow_samples"] == summ["samples"]
+    assert got[0] == summ["written_samples"] * 8
+    ann = json.loads(Path(str(base) + ".sigmf-meta").read_text())["annotations"]
+    assert sum(a["k2websdr:gap_samples"] for a in ann) == summ["queue_overflow_samples"]
+
+
+def test_rejected_retune_does_not_start_a_capture(tmp_path):
+    base = tmp_path / "bad_retune"
+    code, out = probe("record", "--serial", SERIAL, "--freq", "10000000", "--rate", "192000", "--seconds", "2",
+                      "--retune", "300000000@0.5", "--retune", "15000000@1.0", "--out", str(base))
+    assert code == 0
+    assert [r["result"] for r in events(out, "retune")] == [-1, 0]       # mock rejects > 260 MHz
+    caps = json.loads(Path(str(base) + ".sigmf-meta").read_text())["captures"]
+    assert [c["core:frequency"] for c in caps] == [10000000, 15000000]
+    assert events(out, "summary")[0]["captures"] == 2
+
+
+def clip_run(src, out, *args):
+    return subprocess.run([sys.executable, str(TOOLS / "clip.py"), str(src), str(out), *map(str, args)],
+                          capture_output=True, text=True, timeout=120)
+
+
+def test_clip_refuses_to_cross_a_discontinuity(retune_recording, tmp_path):
+    # The fixture recording lost 800 samples at 2.5 s (third capture, 10 MHz, starts at 2.0 s).
+    out = tmp_path / "gap_clip"
+    r = clip_run(retune_recording, out, "--center", 10004000, "--rate", 48000, "--start-s", 2.3, "--seconds", 0.4)
+    assert r.returncode != 0 and "discontinuit" in r.stderr, r.stderr
+    assert not Path(str(out) + ".sigmf-meta").exists() and not Path(str(out) + ".sigmf-data").exists()
+    # The same span ending before the gap is fine.
+    r = clip_run(retune_recording, out, "--center", 10004000, "--rate", 48000, "--start-s", 2.1, "--seconds", 0.3)
+    assert r.returncode == 0, r.stderr
+
+
+def test_clip_refuses_to_run_past_a_retune_or_the_end(retune_recording, tmp_path):
+    r = clip_run(retune_recording, tmp_path / "x", "--center", 10004000, "--rate", 48000, "--start-s", 0.8,
+                 "--seconds", 0.5)
+    assert r.returncode != 0 and "retune" in r.stderr, r.stderr
+    r = clip_run(retune_recording, tmp_path / "y", "--center", 10004000, "--rate", 48000, "--start-s", 2.8,
+                 "--seconds", 1.0)
+    assert r.returncode != 0 and "end of the recording" in r.stderr, r.stderr
+
+
+# --------------------------------------------------------------- guided script
+
+def run_window(tmp_path, probe_path=MOCK, extra_env=None, rec_s="3"):
+    env = dict(os.environ, W1_TEST="1", W1_PROBE=str(probe_path), W1_RATE_S="1", W1_LONG_S="1", W1_REC_S=rec_s,
+               W1_UNPLUG_STREAM_S="4", W1_UNPLUG_ENV="MOCK_UNPLUG_AT_S=1.5", W1_UNPLUG_PROMPT_S="1",
+               W1_REPLUG_WAIT_S="0", W1_CLIP_START="0.5", W1_CLIP_LEN="1", TMPDIR=str(tmp_path), **(extra_env or {}))
+    return subprocess.run(["bash", str(ROOT / "tools/window1/run_window1.sh")], input="\n" * 40, text=True,
+                          capture_output=True, timeout=240, env=env, cwd=ROOT)
+
+
+def cleanup_window():
+    import shutil
+    shutil.rmtree(ROOT / "window1-results", ignore_errors=True)
+    for p in Path("/tmp").glob("k2-window1-*"):
+        shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink()
+
+
+RESTORE = ("sudo systemctl start openwebrx", "sudo gpasswd -d k2dev plugdev")
+
+
+def test_window_stops_when_no_device_can_be_opened(tmp_path):
+    r = run_window(tmp_path, extra_env={"MOCK_BUSY": "1"})
+    try:
+        assert r.returncode != 0
+        assert "STOPPED: no Airspy could be opened" in r.stdout
+        assert "== Done" not in r.stdout
+        tail = r.stdout[r.stdout.index("STOPPED"):]
+        assert all(c in tail for c in RESTORE)                           # restore instructions shown last
+        assert '"mode":"stream"' not in r.stdout and '"mode":"record"' not in r.stdout   # dependents skipped
+        bundle = next(Path("/tmp").glob("k2-window1-*.tar.gz"))          # still diagnosable
+        names = subprocess.run(["tar", "tzf", str(bundle)], capture_output=True, text=True).stdout
+        assert "FAILURES.txt" in names and "window1.jsonl" in names
+    finally:
+        cleanup_window()
+
+
+def test_window_reports_a_failed_recording_and_skips_its_analysis(tmp_path):
+    wrapper = tmp_path / "probe.sh"
+    wrapper.write_text(f'#!/bin/sh\ncase "$*" in *rec/wwv15*) echo "simulated disk failure" >&2; exit 5;; esac\n'
+                       f'exec "{MOCK}" "$@"\n')
+    wrapper.chmod(0o755)
+    r = run_window(tmp_path, probe_path=wrapper)
+    try:
+        assert r.returncode == 1, r.stdout[-3000:]
+        assert "FINISHED WITH 1 FAILURE(S)" in r.stdout and "recording wwv15" in r.stdout
+        assert "skipped: carrier analysis wwv15" in r.stdout
+        assert "== Done" not in r.stdout
+        bundle = next(Path("/tmp").glob("k2-window1-*.tar.gz"))
+        names = subprocess.run(["tar", "tzf", str(bundle)], capture_output=True, text=True).stdout
+        assert "airspyhf_wwv10_48k.sigmf-meta" in names                  # independent work still delivered
+    finally:
+        cleanup_window()
+
+
 def test_full_window_rehearsal(tmp_path):
     """Run tools/window1/run_window1.sh end to end against the mock, answering every prompt."""
-    env = dict(os.environ, W1_TEST="1", W1_PROBE=str(MOCK), W1_RATE_S="1", W1_LONG_S="1", W1_REC_S="3",
-               W1_UNPLUG_STREAM_S="4", W1_UNPLUG_ENV="MOCK_UNPLUG_AT_S=1.5", W1_UNPLUG_PROMPT_S="1",
-               W1_REPLUG_WAIT_S="0", W1_CLIP_START="0.5", W1_CLIP_LEN="1", TMPDIR=str(tmp_path))
-    r = subprocess.run(["bash", str(ROOT / "tools/window1/run_window1.sh")], input="\n" * 40, text=True,
-                       capture_output=True, timeout=240, env=env, cwd=ROOT)
+    r = run_window(tmp_path)
     try:
         assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-2000:]
+        assert "== Done" in r.stdout and "FAILED" not in r.stdout
         assert "exit code: 4" in r.stdout                       # unplug detected
         bundle = next(Path("/tmp").glob("k2-window1-*.tar.gz"))
         names = subprocess.run(["tar", "tzf", str(bundle)], capture_output=True, text=True).stdout
@@ -161,7 +316,4 @@ def test_full_window_rehearsal(tmp_path):
         assert any(e.get("event") == "operator" for e in log)    # prompts and answers are recorded
         assert sum(1 for e in log if e.get("event") == "summary" and e.get("mode") == "record") == 7
     finally:
-        import shutil
-        shutil.rmtree(ROOT / "window1-results", ignore_errors=True)
-        for p in Path("/tmp").glob("k2-window1-*"):
-            shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink()
+        cleanup_window()

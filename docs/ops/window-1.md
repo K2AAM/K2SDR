@@ -104,6 +104,18 @@ The full recordings (about 0.8 GB) stay on the Optiplex in
 
 ## If something goes wrong
 
+The script says so in red. There are two kinds:
+
+- **`STOPPED: ...`** — something everything else depends on failed (for example
+  the Airspy could not be opened). The script stops right there.
+- **`FINISHED WITH N FAILURE(S)`** — one or more measurements failed (for example
+  a recording could not be written to disk) but the rest ran. Anything that
+  needed the failed part was skipped.
+
+Either way it does **not** print `Done`, it still makes the results file, and
+it shows the restore commands below. Run them, then send the results file
+(steps above) anyway: it shows what went wrong.
+
 - **Press Ctrl+C** in Terminal B at any time to stop the script.
 - Then, in **Terminal A**, always restore OpenWebRX:
 
