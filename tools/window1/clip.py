@@ -17,6 +17,7 @@ fixture, and an unannotated gap would make it lie about continuity.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import sys
@@ -32,6 +33,21 @@ def lowpass(num_taps: int, cutoff: float) -> np.ndarray:
     n = np.arange(num_taps) - (num_taps - 1) / 2
     h = np.sinc(2 * cutoff * n) * np.blackman(num_taps)
     return (h / h.sum()).astype(np.float64)
+
+
+def clip_datetime(meta: dict, seg: tuple[int, int, int], start: int, rate: int) -> str:
+    """UTC time of the clip's first sample: its capture's datetime plus the offset into that capture.
+
+    The probe stamps a capture when it calls airspyhf_start/set_freq; Window 1 measured the first
+    sample arriving ~85 ms after the start call, so this is good to about 0.1 s.
+    """
+    cap = next((c for c in meta["captures"] if int(c["core:sample_start"]) == seg[0]), meta["captures"][0])
+    stamp = cap.get("core:datetime", "")
+    if not stamp:
+        return ""
+    t0 = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    t = t0 + dt.timedelta(seconds=(start - seg[0]) / rate)
+    return t.astimezone(dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def main() -> int:
@@ -89,7 +105,7 @@ def main() -> int:
             "core:hw": meta["global"].get("core:hw", ""),
         },
         "captures": [{"core:sample_start": 0, "core:frequency": a.center,
-                      "core:datetime": meta["captures"][0].get("core:datetime", "")}],
+                      "core:datetime": clip_datetime(meta, seg, start, src_rate)}],
         "annotations": [],
     }
     Path(str(a.out) + ".sigmf-meta").write_text(json.dumps(out_meta, indent=2, sort_keys=True) + "\n")

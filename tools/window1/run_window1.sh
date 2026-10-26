@@ -178,7 +178,7 @@ done
 step wwv10  "carrier analysis wwv10"  "$PY" tools/window1/analyze.py carrier "$OUT/rec/wwv10"  --expect 10000000
 step wwv15  "carrier analysis wwv15"  "$PY" tools/window1/analyze.py carrier "$OUT/rec/wwv15"  --expect 15000000
 step chu785 "carrier analysis chu785" "$PY" tools/window1/analyze.py carrier "$OUT/rec/chu785" --expect 7850000
-step retune "settle analysis"         "$PY" tools/window1/analyze.py settle  "$OUT/rec/retune" --expect 10000000 --expect 15000000
+step retune "retune analysis"         "$PY" tools/window1/analyze.py retune  "$OUT/rec/retune" --expect 10000000 --expect 15000000
 
 say "Small clips for the repository"
 step wwv10 "clip wwv10"    "$PY" tools/window1/clip.py "$OUT/rec/wwv10" "$UPLOAD/airspyhf_wwv10_48k" --center 10001000 --rate 48000 --start-s "$CLIP_START" --seconds "${CLIP_LEN:-5}"

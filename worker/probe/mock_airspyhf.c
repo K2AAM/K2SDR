@@ -45,7 +45,8 @@ struct airspyhf_device {
     int32_t calib;
 };
 
-static const uint32_t RATES[] = {912000, 768000, 456000, 384000, 256000, 192000};
+/* The list the real Airspy HF+ (firmware R5.0.1-CD, lib 1.6.8) reported in Window 1. */
+static const uint32_t RATES[] = {912000, 768000, 650000, 456000, 384000, 228000, 192000};
 
 static double now_s(void) {
     struct timespec ts;
@@ -91,7 +92,7 @@ int ADDCALL airspyhf_close(airspyhf_device_t* d) {
 }
 
 int ADDCALL airspyhf_get_output_size(airspyhf_device_t* d) { (void)d; return BLOCK; }
-int ADDCALL airspyhf_is_low_if(airspyhf_device_t* d) { return d->rate <= 384000; }
+int ADDCALL airspyhf_is_low_if(airspyhf_device_t* d) { return d->rate <= 650000; }  /* as measured */
 int ADDCALL airspyhf_is_streaming(airspyhf_device_t* d) { return d->streaming; }
 
 int ADDCALL airspyhf_get_samplerates(airspyhf_device_t* d, uint32_t* buffer, const uint32_t len) {

@@ -122,11 +122,34 @@ def test_carrier_analysis_refuses_to_trust_noise(retune_recording):
     assert res and all(r["usable"] is False and "warning" in r for r in res), res
 
 
-def test_settle_analysis_finds_the_simulated_settling(retune_recording):
-    res = tool("analyze.py", "settle", retune_recording, "--expect", 10005000, "--expect", 15005000)
+def test_retune_analysis_finds_the_step_and_the_simulated_transient(retune_recording):
+    res = tool("analyze.py", "retune", retune_recording, "--expect", 10005000, "--expect", 15005000)
     assert len(res) == 2
     for r in res:
-        assert r["settle_ms"] is not None and 25 <= r["settle_ms"] <= 70, res
+        assert r["step_ms"] is not None and abs(r["step_ms"]) <= 12, res     # within ~1 block of the call
+        assert 25 <= r["settle_ms"] <= 70, res                                 # mock: 40 ms of junk
+        assert r["carrier_present"] and abs(abs(r["carrier_offset_hz"]) - 5000) < 2, res
+
+
+def test_retune_analysis_reports_no_transient_for_a_clean_switch(tmp_path):
+    base = tmp_path / "clean"
+    code, _ = probe("record", "--serial", SERIAL, "--freq", "10000000", "--rate", "192000", "--seconds", "2",
+                    "--retune", "15000000@0.8", "--out", str(base), env={"MOCK_SETTLE_MS": "0"})
+    assert code == 0
+    (r,) = tool("analyze.py", "retune", base, "--expect", 10005000, "--expect", 15005000)
+    assert r["settle_ms"] == 0.0, r
+
+
+def test_clip_datetime_is_the_clip_start_not_the_recording_start(retune_recording, tmp_path):
+    out = tmp_path / "late_clip"
+    tool("clip.py", retune_recording, out, "--center", 10004000, "--rate", 48000, "--start-s", 2.1, "--seconds", 0.3)
+    import datetime as dt
+    src = json.loads(Path(str(retune_recording) + ".sigmf-meta").read_text())["captures"]
+    clip = json.loads(Path(str(out) + ".sigmf-meta").read_text())["captures"][0]["core:datetime"]
+    third = src[2]                                   # the clip lies in the third capture (10 MHz from ~2.0 s)
+    parse = lambda s: dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    expect = parse(third["core:datetime"]) + dt.timedelta(seconds=(int(2.1 * 192000) - third["core:sample_start"]) / 192000)
+    assert abs((parse(clip) - expect).total_seconds()) < 0.002, (clip, expect)
 
 
 def test_clip_produces_a_loadable_fixture_with_the_tone_where_expected(retune_recording, tmp_path):

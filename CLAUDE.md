@@ -53,7 +53,8 @@ invent features, or weaken explicit requirements unless Adam asks.
   5 ledger + auth/admin/`/healthz` ✅, 6 coexistence tooling + ADRs ✅).
   **M0 complete (2026-10-26)**: A13 passed on the Optiplex (`docs/ops/a13-result-2026-10-26.md`).
   **M1 in progress**: design approved 2026-10-26 (`docs/design/M1-first-live-receiver.md`).
-  Window 1 (Airspy measurements + IQ recording) scheduled Tue 2026-10-27.
+  Window 1 ran 2026-10-26 (`docs/ops/airspyhf-measurements-2026-10-26.md`): H1, H2, H6, H8 done;
+  H4/H5 partial; H3, H7 open → Window 1b. Real clips in `fixtures/real/airspyhf/`.
   M1 branches: `m1/<topic>`.
 - Each block: branch `m0/<topic>` → PR → CI green → merge. Keep PRs reviewable.
 - Two Claude sessions may work on this repo: a cloud session (no LAN access)

@@ -1,0 +1,27 @@
+# FT8 messages in airspyhf_ft8_40m_48k (15 s, slot 2026-10-26 22:33:30 UTC, dial 7.074 MHz USB).
+# Decoded offline with ft8_lib decode_ft8 (https://github.com/kgoba/ft8_lib, MIT, commit 9fec6ca)
+# after USB demodulation to 12 kS/s audio (dial 7074000 Hz). Not a project dependency; used once
+# to confirm the recording chain. Columns: SNR dB, time offset s (from clip start), audio Hz, message.
+# Public amateur transmissions; callsigns are not location evidence (no map markers from these).
++17.5 +1.20  419 EU7FBB VO1AW R-11
++16.0 +1.12 1950 CQ WB2UBW EM67
++15.5 +1.20 1819 YE4FNN WA1T +08
++15.5 +1.20  669 W5LO UT5UGR +19
++15.5 +1.20 2144 W5RF IC8TEM R-20
++15.5 +1.36  462 IK0CHU VE9GC -10
++15.5 +1.84 1694 WY0V KE9COB +14
++15.0 +1.12  744 CT7BRV K0ILP EM85
++14.0 +1.12 1141 EA5DJ VE1JBC FN73
++13.5 +1.20 1744 CQ EA7BD IM77
++13.0 +1.20 2809 VO1ACZ EA7LGM IM67
++13.0 +1.28 2494 K2KN OK1VM -12
++12.0 +1.12 1197 CQ SP6CA JO80
++12.0 +1.20 2556 K8KK WB8UBR EM79
++11.5 +1.20 2025 W5LO HB9TIH R-11
++11.5 +1.52  944 CQ K3DY FN20
++11.5 +1.20 1312 CQ HA1BF JN86
++11.0 +1.12  622 CT7BRV MM7FTH R+01
++09.0 +0.56 2241 R9OAE <...> R-04
++09.0 +1.20  531 YY4GPM SP6SR JO81
++08.5 +1.20  312 K6RO GU7DAI RR73
++07.5 +1.28  203 W5LO IU8RFW JN70

@@ -81,43 +81,78 @@ def carrier(base: Path, expects: list[int]) -> list[dict]:
     return out
 
 
-def settle(base: Path, expects: list[int], win: int = 256, hold: int = 20, thresh: float = 0.5) -> list[dict]:
+def _step_index(x: np.ndarray, a: int, b: int, center: int, win: int) -> int | None:
+    """Sample where total power steps from its level before `center` to its level after (None: no step)."""
+    p = np.abs(x[a:b]) ** 2
+    k = len(p) // win
+    if k < 8:
+        return None
+    pw = 10 * np.log10(p[: k * win].reshape(k, win).mean(1) + 1e-30)
+    c = (center - a) // win
+    pre, post = np.median(pw[: max(c - 2, 1)]), np.median(pw[c + max(k // 4, 4):])
+    if abs(post - pre) < 3.0:                     # levels too close to locate a step reliably
+        return None
+    side = (pw - (pre + post) / 2) * np.sign(post - pre) > 0
+    hold = max(4, k // 20)
+    j = next((j for j in range(k - hold) if side[j:j + hold].all()), None)
+    return None if j is None else a + j * win
+
+
+def retune(base: Path, expects: list[int], window_ms: int = 200, tol_db: float = 1.0) -> list[dict]:
+    """For each retune: where the switch appears in the data and how long until the band is steady.
+
+    step_ms: total-power step relative to the recorded capture boundary (the sample count when
+      set_freq was called); positive by however many samples were already in flight.
+    settle_ms: end of the last 1 ms window, within window_ms of the step, whose total power lies
+      outside the range the band itself shows in steady state (from window_ms after the step to the
+      end of the capture), widened by tol_db, counting only runs of >= 2 windows (a lone 1 ms
+      window is a fade). 0 = nothing distinguishable from the steady band.
+      A tuning transient (PLL relock junk, muting, AGC recovery) shows up here. HF signals swing
+      several dB per millisecond with their own modulation, so "within N dB of the mean" tests are
+      not usable; a single carrier fades and lacks SNR in 1 ms, so it is not used as the clock.
+    carrier_*: whether the expected carrier is present after the switch (long-window FFT).
+    """
     meta, x = load_meta(base), load_samples(base)
     rate = int(meta["global"]["core:sample_rate"])
     segs = segments(meta, len(x))
-    out = []
+    w_step, w_ms = max(rate // 4000, 1), max(rate // 1000, 1)          # 0.25 ms and 1 ms windows
+    out: list[dict] = []
     for i, (start, end, f0) in enumerate(segs[1:], 1):
-        target = next((e - f0 for e in expects if abs(e - f0) < rate / 2), None)
-        if target is None:
-            out.append({"retune_index": i, "freq_hz": f0, "result": "no expected carrier in band"})
+        rec: dict = {"retune_index": i, "freq_hz": f0}
+        a = max(segs[i - 1][0], start - rate // 50)
+        b = min(end, start + rate // 20)
+        step = _step_index(x, a, b, start, w_step)
+        rec["step_ms"] = None if step is None else round((step - start) / rate * 1000, 2)
+        s0 = step if step is not None else start
+        p = np.abs(x[s0:end]) ** 2
+        k = len(p) // w_ms
+        if k < 2 * window_ms:
+            out.append({**rec, "result": "segment too short"})
             continue
-        k = int(round(target / rate * win)) % win
-        nwin = (end - start) // win
-        ok_run, settled_at = 0, None
-        for j in range(nwin):
-            blk = x[start + j * win:start + (j + 1) * win] * np.hanning(win)
-            p = np.abs(np.fft.fft(blk)) ** 2
-            frac = (p[(k - 1) % win] + p[k] + p[(k + 1) % win]) / max(p.sum(), 1e-30)
-            if frac >= thresh:
-                ok_run += 1
-                if ok_run == hold:
-                    settled_at = (j - hold + 1) * win
-                    break
-            else:
-                ok_run = 0
-        out.append({"retune_index": i, "freq_hz": f0,
-                     "settle_ms": None if settled_at is None else round(settled_at / rate * 1000, 2),
-                     "note": "relative to the sample counted when set_freq was called"})
+        pw = 10 * np.log10(p[: k * w_ms].reshape(k, w_ms).mean(1) + 1e-30)
+        steady = pw[window_ms:]
+        lo, hi = steady.min() - tol_db, steady.max() + tol_db
+        out_w = (pw[:window_ms] < lo) | (pw[:window_ms] > hi)
+        run = out_w[:-1] & out_w[1:]                  # >= 2 consecutive windows: a lone 1 ms window is a fade
+        idx = np.flatnonzero(run)
+        rec["settle_ms"] = float(idx[-1] + 2) if len(idx) else 0.0
+        target = next((e - f0 for e in expects if abs(e - f0) < rate / 2), None)
+        if target is not None:
+            got = tone_frequency(x[s0 + rate // 10:end][: rate * 2], rate, target)
+            if got:
+                rec["carrier_offset_hz"], rec["carrier_snr_db"] = round(got[0], 2), round(got[1], 1)
+                rec["carrier_present"] = got[1] >= MIN_SNR_DB
+        out.append(rec)
     return out
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", choices=["carrier", "settle"])
+    ap.add_argument("what", choices=["carrier", "retune", "settle"])
     ap.add_argument("base", type=Path)
     ap.add_argument("--expect", type=int, action="append", required=True)
     a = ap.parse_args()
-    res = carrier(a.base, a.expect) if a.what == "carrier" else settle(a.base, a.expect)
+    res = carrier(a.base, a.expect) if a.what == "carrier" else retune(a.base, a.expect)   # settle: old name
     for r in res:
         print(json.dumps(r))
     return 0

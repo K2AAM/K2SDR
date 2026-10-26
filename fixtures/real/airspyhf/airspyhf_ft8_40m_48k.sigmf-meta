@@ -1,0 +1,19 @@
+{
+  "annotations": [],
+  "captures": [
+    {
+      "core:datetime": "2026-10-26T22:33:29.473Z",
+      "core:frequency": 7075500,
+      "core:sample_start": 0
+    }
+  ],
+  "global": {
+    "core:datatype": "ci16_le",
+    "core:description": "Real Airspy HF+ recording (Window 1), clipped: source sha512 1c916a1d64a7e384..., source center 7120000 Hz @ 192000 S/s, 12.1s+15.0s, shifted to 7075500 Hz, decimated x4, normalized to 90% full scale. core:datetime corrected to the clip start (2026-10-26T22:33:17.373Z recording start call + 12.1 s; first sample arrives ~85 ms after the start call)",
+    "core:hw": "Airspy HF+ serial 3B52978026BA46DA",
+    "core:recorder": "tools/window1/clip.py",
+    "core:sample_rate": 48000,
+    "core:sha512": "5f8ece99f2ad484c8156f5b78cf8f6a13ccc26f0b97689ae99d5eb89025dbd83661e41f5663f31d9f7e02dfff5720d60b9f0933a5101be397ebd26075c192ccb",
+    "core:version": "1.2.6"
+  }
+}
