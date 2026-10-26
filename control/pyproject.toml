@@ -13,6 +13,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest==9.1.1",
+    "numpy>=2,<3",  # tests only: spectral checks on fixtures
 ]
 
 [build-system]

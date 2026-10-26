@@ -1,0 +1,17 @@
+{
+  "annotations": [],
+  "captures": [
+    {
+      "core:sample_start": 0
+    }
+  ],
+  "global": {
+    "core:author": "K2AAM WebSDR fixture generator",
+    "core:datatype": "ri16_le",
+    "core:description": "Synthetic: real ADC-style samples, 10 kHz tone (10000) at 64 kS/s, frequency origin 0 Hz, uniform noise +/-32. Bin width 3.90625 Hz.",
+    "core:recorder": "fixtures/gen/make_synthetic.py v1",
+    "core:sample_rate": 64000,
+    "core:sha512": "ac01b933bb68c06dd99af36cb6331e9f12ea2aa2e11a6233c170be0e01ee6aac6b6786df9cdfb080c2b5ec3d9a0abc4d4ca34e98ff4930b155ac710cadc316d5",
+    "core:version": "1.2.6"
+  }
+}
