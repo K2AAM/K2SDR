@@ -26,7 +26,7 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential make git ca-certificates python3 python3-venv
+            build-essential cmake ninja-build make git ca-certificates python3 python3-venv
       - uses: actions/checkout@v4
       - name: Install pinned uv
         run: |
@@ -36,6 +36,8 @@ jobs:
       - name: Record toolchain
         run: |
           . /etc/os-release && echo "$PRETTY_NAME"
-          python3 --version; cc --version | head -1; c++ --version | head -1; uv --version
+          python3 --version; cc --version | head -1; c++ --version | head -1; cmake --version | head -1; uv --version
       - run: make sync
       - run: make check
+      - name: Worker tests under AddressSanitizer + UBSan
+        run: make test-worker-san
