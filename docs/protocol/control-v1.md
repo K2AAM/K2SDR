@@ -65,9 +65,35 @@ is reconciled normally.
 
 Retrying a command `id` returns the original `ack` (and `result`, if finished)
 without executing again, including from a new session after a reconnect.
-Finished outcomes (results and rejections) are kept for 10 minutes after they
-finish; the cache is also capped at 10,000 records, evicting the oldest
-finished outcomes first. A command still in flight is never evicted.
+Retries are matched before any other check, so a full server never turns a
+retry into a rejection or a second execution.
+
+## Capacity
+
+Three limits bound memory and queueing (defaults in `k2websdr.core.service`):
+
+| Limit | Default | What it bounds |
+| --- | --- | --- |
+| `MAX_CMD_RECORDS` | 10,000 | Idempotency records: in-flight commands plus finished outcomes |
+| `MAX_IN_FLIGHT` | 1,000 (always below the record limit) | Accepted hardware commands not yet finished, all receivers |
+| `RECEIVER_QUEUE_LIMIT` | 64 | Hardware commands queued or executing on one receiver |
+
+- A hardware command (`receiver.set_capture`) is checked against the in-flight
+  and receiver-queue limits **before** it is accepted: before any field is marked
+  `pending` and before it enters the receiver queue. When a limit is reached it
+  is rejected with `E_BUSY` and a detail naming the limit.
+- Capacity rejections are not recorded. They cannot grow the cache, and a
+  retry of the same `id` later is evaluated afresh (it may then be accepted).
+- Accepted commands are never evicted while queued or executing, and each gets
+  exactly one final `result`.
+- Finished outcomes (results and other rejections) are kept for 10 minutes
+  after they finish, but share the record limit: under sustained load the
+  oldest finished outcomes are evicted first, so retention can be shorter than
+  10 minutes. A retry of an `id` whose finished outcome was evicted is treated as
+  a new command. Because the in-flight limit is always below the record limit,
+  evicting finished outcomes alone always keeps the total within bound.
+- Lease claim/release, subscribe, hello and session cleanup are not hardware
+  commands and are never refused for capacity.
 
 ## Session expiry on WebSockets
 

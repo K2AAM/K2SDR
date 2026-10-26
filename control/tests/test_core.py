@@ -22,8 +22,8 @@ from fake_worker import FakeWorker, fake_factory
 RX = "replay-0"
 
 
-async def make(script=None, *, gate=None, policy="deny", timeout=2.0, **cfg):
-    core = ControlCore()
+async def make(script=None, *, gate=None, policy="deny", timeout=2.0, core_kw=None, **cfg):
+    core = ControlCore(**(core_kw or {}))
     rt = core.add_receiver(rx_config(RX, takeover_policy=policy, command_timeout=timeout, **cfg),
                            fake_factory(deque(script or []), gate=gate))
     await core.start()
@@ -611,3 +611,165 @@ async def test_queued_command_still_runs_when_nothing_changed():
     assert [(await a.outcome(i))[1].status for i in ids] == ["applied", "applied"]
     assert len(FakeWorker.instances[-1].calls) == 2
     await core.shutdown()
+
+
+
+# ------------------------------------------------ command capacity (M0 follow-up)
+
+def _acks(c: Client, cid: str):
+    return [x for x in c.replies(cid) if isinstance(x, m.Ack)]
+
+
+async def _set(c: Client, **args) -> str:
+    return await c.send("receiver.set_capture", receiver=RX, **args)
+
+
+@async_test
+async def test_excess_hardware_commands_are_rejected_before_any_state_change():
+    """Reviewer's reproduction: cap 5, blocked worker, 12 distinct valid capture commands."""
+    gate = asyncio.Event()
+    core, rt = await make([("apply",)] * 12, gate=gate, core_kw={"cmd_capacity": 5})
+    c = await operator_with_lease(core)                       # claim + subscribe: 2 finished records
+    assert core.in_flight_capacity == 4
+    accepted, rejected = [], []
+    for _ in range(12):
+        before_state, before_rev, before_queue = core.store.view(), core.store.rev, rt.outstanding
+        cid = await _set(c, center_hz=CENTER)
+        (ack,) = _acks(c, cid)
+        if ack.status == "accepted":
+            accepted.append(cid)
+        else:
+            assert ack.code is ErrorCode.E_BUSY and "hardware commands in progress" in ack.detail
+            assert core.store.view() == before_state and core.store.rev == before_rev, \
+                "a capacity rejection must not mark anything pending"
+            assert rt.outstanding == before_queue, "nor enter the receiver queue"
+            rejected.append(cid)
+        assert len(core._cmds) <= 5, "the cache never exceeds its bound"
+    assert len(accepted) == 4 and len(rejected) == 8
+    assert c.field(RX, "center_hz")["cmd"] == accepted[-1]       # pending state belongs to accepted commands only
+    for cid in accepted:                                          # accepted commands stay tracked
+        assert any(i == cid for (_, i) in core._cmds)
+    for cid in rejected:                                          # rejections are not recorded
+        assert not any(i == cid for (_, i) in core._cmds)
+    gate.set()
+    for cid in accepted:                                          # exactly one ack and one final result each
+        _, res = await c.outcome(cid)
+        assert res.status == "applied"
+        assert [type(x).__name__ for x in c.replies(cid)] == ["Ack", "Result"]
+    assert len(FakeWorker.instances[-1].calls) == 4
+    await core.shutdown()
+
+
+@async_test
+async def test_retries_bypass_the_capacity_check_and_never_execute_twice():
+    gate = asyncio.Event()
+    core, rt = await make([("apply",)] * 6, gate=gate, core_kw={"cmd_capacity": 5, "in_flight_capacity": 2})
+    c = await operator_with_lease(core)
+    first_id, first_raw = cmd("receiver.set_capture", receiver=RX, center_hz=CENTER)
+    await c.send_raw(first_raw)
+    await _set(c, center_hz=CENTER)                                # in-flight now full (2)
+    over = await _set(c, center_hz=CENTER)
+    assert _acks(c, over)[0].code is ErrorCode.E_BUSY
+    await c.send_raw(first_raw)                                    # retry of an accepted id while full
+    acks = _acks(c, first_id)
+    assert [a.status for a in acks] == ["accepted", "accepted"], "retry gets the original ack, not E_BUSY"
+    gate.set()
+    await c.outcome(first_id)
+    await asyncio.sleep(0.05)
+    assert [x for x in c.replies(first_id) if isinstance(x, m.Result)].__len__() == 1
+    assert len(FakeWorker.instances[-1].calls) == 2, "the retry did not execute again"
+    await core.shutdown()
+
+
+@async_test
+async def test_capacity_rejected_id_can_be_retried_once_capacity_frees():
+    gate = asyncio.Event()
+    core, rt = await make([("apply",)] * 4, gate=gate, core_kw={"cmd_capacity": 4, "in_flight_capacity": 1})
+    c = await operator_with_lease(core)
+    blocker = await _set(c, center_hz=CENTER)
+    late_id, late_raw = cmd("receiver.set_capture", receiver=RX, center_hz=CENTER)
+    await c.send_raw(late_raw)
+    assert _acks(c, late_id)[0].code is ErrorCode.E_BUSY
+    gate.set()
+    await c.outcome(blocker)                                       # capacity becomes available again
+    await c.send_raw(late_raw)                                     # same id, evaluated afresh
+    for _ in range(200):                                           # (outcome() stops at the first ack)
+        results = [x for x in c.replies(late_id) if isinstance(x, m.Result)]
+        if results:
+            break
+        await asyncio.sleep(0.01)
+    assert [a.status for a in _acks(c, late_id)] == ["rejected", "accepted"]
+    assert len(results) == 1 and results[0].status == "applied"
+    assert len(FakeWorker.instances[-1].calls) == 2
+    await core.shutdown()
+
+
+@async_test
+async def test_receiver_queue_limit():
+    gate = asyncio.Event()
+    core, rt = await make([("apply",)] * 5, gate=gate,
+                          core_kw={"cmd_capacity": 100, "in_flight_capacity": 50, "receiver_queue_limit": 3})
+    c = await operator_with_lease(core)
+    ids = [await _set(c, center_hz=CENTER) for _ in range(5)]
+    statuses = [_acks(c, i)[0] for i in ids]
+    assert [a.status for a in statuses] == ["accepted"] * 3 + ["rejected"] * 2
+    assert all(a.code is ErrorCode.E_BUSY and "replay-0 busy" in a.detail for a in statuses[3:])
+    assert rt.outstanding == 3
+    gate.set()
+    for i in ids[:3]:
+        await c.outcome(i)
+    assert rt.outstanding == 0
+    ack, res = await c.outcome(await _set(c, center_hz=CENTER))   # room again
+    assert ack.status == "accepted" and res.status == "applied"
+    await core.shutdown()
+
+
+@async_test
+async def test_release_cleanup_and_observation_work_during_overload():
+    gate = asyncio.Event()
+    core, rt = await make([("apply",)] * 4, gate=gate, core_kw={"cmd_capacity": 4, "in_flight_capacity": 2})
+    a = await operator_with_lease(core)
+    queued = [await _set(a, center_hz=CENTER) for _ in range(2)]
+    assert _acks(a, await _set(a, center_hz=CENTER))[0].code is ErrorCode.E_BUSY     # saturated
+    w = Client(core, LISTENER)
+    await w.subscribe()                                             # state observation still works
+    assert w.mirror["receivers"][RX]["capture"]["center_hz"]["status"] == "pending"
+    ack, res = await a.outcome(await a.send("receiver.release", receiver=RX))
+    assert (ack.status, res.status) == ("accepted", "applied"), "lease release still works"
+    assert len(core._cmds) <= 4
+    core.close_session(a.session)                                   # session cleanup still works
+    gate.set()
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if not core._in_flight:
+            break
+    assert not core._in_flight, "every accepted command reached a final result"
+    w.drain()
+    assert w.mirror["receivers"][RX]["lease"]["holder"] is None
+    await core.shutdown()
+
+
+@async_test
+async def test_bound_holds_under_mixed_load():
+    gate = asyncio.Event()
+    script = [("apply",)] * 50
+    core, rt = await make(script, gate=gate, core_kw={"cmd_capacity": 6, "in_flight_capacity": 3})
+    c = await operator_with_lease(core)
+    g = Client(core, LISTENER)
+    for i in range(40):
+        await _set(c, center_hz=CENTER)                            # mostly E_BUSY once full
+        await g.send("receiver.claim", receiver=RX)                 # recorded rejections (E_FORBIDDEN)
+        await c.send("session.hello", client="x")                   # recorded immediate successes
+        assert len(core._cmds) <= 6 and len(core._in_flight) <= 3
+        if i == 20:
+            gate.set()
+    await core.shutdown()
+
+
+def test_capacity_configuration_is_validated():
+    with pytest.raises(ValueError):
+        ControlCore(cmd_capacity=5, in_flight_capacity=5)          # in-flight must leave room
+    with pytest.raises(ValueError):
+        ControlCore(receiver_queue_limit=-1)
+    assert ControlCore(cmd_capacity=5).in_flight_capacity == 4
+    assert ControlCore().in_flight_capacity == 1000
