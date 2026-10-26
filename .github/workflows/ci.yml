@@ -38,6 +38,23 @@ jobs:
           . /etc/os-release && echo "$PRETTY_NAME"
           python3 --version; cc --version | head -1; c++ --version | head -1; cmake --version | head -1; uv --version
       - run: make sync
-      - run: make check
+      - name: make check
+        run: |
+          set -o pipefail
+          PYTEST_ADDOPTS="-rfE --tb=short" make check 2>&1 | tee check.log
+      - name: Report failing tests as an annotation
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import re
+          log = open("check.log", encoding="utf-8", errors="replace").read().splitlines()
+          start = next((i for i, l in enumerate(log) if "short test summary info" in l), None)
+          lines = log[start:start + 60] if start is not None else log[-80:]
+          # Last traceback lines help when the summary alone is not enough.
+          tb = [l for l in log if re.match(r"^E\s", l)][-30:]
+          msg = "\n".join(lines + ["--- assertion lines ---"] + tb)
+          msg = msg.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          print(f"::error title=make check failed::{msg[:60000]}")
+          PY
       - name: Worker tests under AddressSanitizer + UBSan
         run: make test-worker-san
