@@ -14,9 +14,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Debian 12 (Python 3.11) and Debian 13 (Python 3.13): the two candidate
-        # Optiplex releases. Tests run on the distro Python, never a downloaded one.
-        image: ["debian:bookworm", "debian:trixie"]
+        # Debian 13 (Python 3.13): the confirmed Optiplex release.
+        # Tests run on the distro Python, never a downloaded one.
+        image: ["debian:trixie"]
     container: ${{ matrix.image }}
     env:
       UV_PYTHON_DOWNLOADS: never

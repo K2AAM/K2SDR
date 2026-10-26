@@ -20,7 +20,7 @@ repository at this time.
 | Component | Version | License | Source |
 | --- | --- | --- | --- |
 | pytest | 9.1.1 | MIT | https://github.com/pytest-dev/pytest |
-| numpy | 2.4.6 (Python 3.11) / 2.5.4 (Python ≥ 3.12) | BSD-3-Clause | https://github.com/numpy/numpy (test-only spectral checks; fixtures are generated without it) |
+| numpy | 2.5.4 | BSD-3-Clause | https://github.com/numpy/numpy (test-only spectral checks; fixtures are generated without it) |
 | pluggy | 1.7.0 | MIT | https://github.com/pytest-dev/pluggy |
 | iniconfig | 2.3.1 | MIT | https://github.com/pytest-dev/iniconfig |
 | packaging | 26.3 | Apache-2.0 OR BSD-2-Clause | https://github.com/pypa/packaging |

@@ -2,9 +2,8 @@
 name = "k2websdr"
 version = "0.0.0"
 description = "K2AAM WebSDR control service"
-# Covers Debian 12 (Python 3.11) and Debian 13 (Python 3.13). Narrow once the
-# Optiplex release is confirmed from /etc/os-release.
-requires-python = ">=3.11"
+# Target: Debian 13 (trixie), Python 3.13 — confirmed on the Optiplex 2026-10-26.
+requires-python = ">=3.13"
 license = { text = "All rights reserved (license pending)" }
 dependencies = [
     "pydantic==2.14.1",  # exact: generated schema output depends on it,

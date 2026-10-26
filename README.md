@@ -21,7 +21,7 @@ an existing OpenWebRX+ installation.
 
 ## Development
 
-Requires `uv`, a C11 and C++17 compiler (`build-essential`), and Python ≥ 3.11.
+Target: Debian 13 (trixie). Requires `uv`, a C11 and C++17 compiler (`build-essential`), and Python 3.13.
 
 ```bash
 make sync          # pinned environment from control/uv.lock
