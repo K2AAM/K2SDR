@@ -50,7 +50,7 @@ invent features, or weaken explicit requirements unless Adam asks.
 
 - One milestone at a time; within M0, work in the block order of the design
   note (1 protocol ✅, 2 fixtures ✅, 3 C++ replay worker ✅, 4 control core ✅,
-  5 auth/admin/`/healthz`, 6 coexistence tooling + ADRs).
+  5 ledger + auth/admin/`/healthz` ✅, 6 coexistence tooling + ADRs).
 - Each block: branch `m0/<topic>` → PR → CI green → merge. Keep PRs reviewable.
 - Two Claude sessions may work on this repo: a cloud session (no LAN access)
   and a local session on the Optiplex (as `k2dev`). Check open PRs and branches
@@ -66,6 +66,7 @@ make check           # schema-check + fixtures-check + all tests
 make schema          # after changing k2websdr.protocol.models
 make fixtures        # after changing fixtures/gen/make_synthetic.py
 make ledger          # regenerate ledger/modes.v1.json from the outline appendix
+make run-dev         # service on 127.0.0.1:8075 with replay receivers (docs/ops/first-run.md)
 ```
 
 Build prerequisites: `build-essential`, `cmake`, `ninja-build`, `python3` (3.13), `uv`.
@@ -76,5 +77,5 @@ Build prerequisites: `build-essential`, `cmake`, `ninja-build`, `python3` (3.13)
 A1 integer-Hz wire ✅ · A2 command lifecycle ✅ · A3 serialized queue ✅ · A4 lease
 and job survival ✅ · A5 single device owner (flock) ✅ · A6 deterministic replay ✅ ·
 A7 stale-generation drop ✅ · A8 fixtures + replay flags ✅ ·
-A9 ledger ✅ · A10 first run, no default password · A11 HTTP+WS authz ·
-A12 trusted proxies · A13 OWRX coexistence on the Optiplex · A14 schema ✅
+A9 ledger ✅ · A10 first run, no default password ✅ · A11 HTTP+WS authz ✅ ·
+A12 trusted proxies ✅ · A13 OWRX coexistence on the Optiplex · A14 schema ✅

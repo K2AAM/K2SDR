@@ -21,6 +21,8 @@ an existing OpenWebRX+ installation.
 | `tools/` | Ledger import and upstream comparison tools |
 | `control/` | Python control service package `k2websdr` |
 | `docs/protocol/` | Human-readable protocol notes |
+| `docs/ops/` | Host inventory and how to run the service (`first-run.md`) |
+| `dev/` | Development configuration |
 
 ## Development
 
@@ -30,6 +32,7 @@ Target: Debian 13 (trixie). Requires `uv`, `build-essential`, `cmake`, `ninja-bu
 make sync          # pinned environment from control/uv.lock
 make check         # A14 schema freshness + all tests
 make schema        # regenerate protocol/schema/control-v1.json after a model change
+make run-dev       # run the service on 127.0.0.1:8075 with replay receivers
 ```
 
 ## License

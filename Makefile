@@ -3,7 +3,7 @@ UV      ?= uv
 PY      := $(UV) run --project control --frozen
 SCHEMA  := protocol/schema/control-v1.json
 
-.PHONY: help sync worker worker-san test test-a1 test-worker-san schema schema-check fixtures fixtures-check ledger ledger-check check
+.PHONY: help sync worker worker-san test test-a1 test-worker-san schema schema-check fixtures fixtures-check ledger ledger-check run-dev check
 help:
 	@echo "make sync          install pinned dev environment (control/uv.lock)"
 	@echo "make worker        build the C++ worker (build/worker/ksdr-worker)"
@@ -15,6 +15,7 @@ help:
 	@echo "make fixtures      regenerate fixtures/iq (synthetic SigMF)"
 	@echo "make fixtures-check fail if fixtures/iq differs from the generator"
 	@echo "make ledger        regenerate ledger/modes.v1.json from the outline appendix"
+	@echo "make run-dev       run the service on 127.0.0.1:8075 with replay fixtures"
 	@echo "make check         schema-check + fixtures-check + ledger-check + test"
 
 sync:
@@ -56,5 +57,8 @@ ledger:
 
 ledger-check:
 	python3 tools/import_ledger.py --check docs/outline/WebSDR_Project_Outline-v0.1.md ledger/modes.v1.json
+
+run-dev: worker
+	$(PY) k2websdr-server --config dev/k2websdr.dev.toml
 
 check: schema-check fixtures-check ledger-check test
