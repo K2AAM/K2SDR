@@ -1,0 +1,18 @@
+{
+  "annotations": [],
+  "captures": [
+    {
+      "core:frequency": 7074000,
+      "core:sample_start": 0
+    }
+  ],
+  "global": {
+    "core:author": "K2AAM WebSDR fixture generator",
+    "core:datatype": "ci16_le",
+    "core:description": "Synthetic: complex tones at +1500 Hz (8000) and -3000 Hz (4000) around 7.074 MHz, uniform noise +/-64. Bin width 4 Hz.",
+    "core:recorder": "fixtures/gen/make_synthetic.py v1",
+    "core:sample_rate": 48000,
+    "core:sha512": "6005e0f32b9f2395d27b5f4f7372a2d793c0124a9517a2177e436b80e07328a7cceba0b9529ee05142cfdcc278f9b1f198c870d3f5b50693f026b15b5c1a2108",
+    "core:version": "1.2.6"
+  }
+}

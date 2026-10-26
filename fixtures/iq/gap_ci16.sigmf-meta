@@ -1,0 +1,37 @@
+{
+  "annotations": [
+    {
+      "core:label": "discontinuity",
+      "core:sample_count": 0,
+      "core:sample_start": 4800,
+      "k2websdr:gap_samples": 2412
+    },
+    {
+      "core:label": "discontinuity",
+      "core:sample_count": 0,
+      "core:sample_start": 7200
+    }
+  ],
+  "captures": [
+    {
+      "core:frequency": 14074000,
+      "core:sample_start": 0
+    }
+  ],
+  "global": {
+    "core:author": "K2AAM WebSDR fixture generator",
+    "core:datatype": "ci16_le",
+    "core:description": "Synthetic: +1000 Hz tone around 14.074 MHz with two source gaps: 2412 samples (50.25 cycles) lost before sample 4800 (known), and an unknown-length gap before sample 7200.",
+    "core:extensions": [
+      {
+        "name": "k2websdr",
+        "optional": false,
+        "version": "1.0.0"
+      }
+    ],
+    "core:recorder": "fixtures/gen/make_synthetic.py v1",
+    "core:sample_rate": 48000,
+    "core:sha512": "84d24c8e5aabca38840ad5e96b0a90ecb802fa87da4bb3411f15ddb77a403cb4d0bb0fe06466714c3b3d82a88dee860af5eb3f6a7dc1d262fef22d4bf096cbec",
+    "core:version": "1.2.6"
+  }
+}
