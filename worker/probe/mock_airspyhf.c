@@ -45,7 +45,8 @@ struct airspyhf_device {
     int32_t calib;
 };
 
-static const uint32_t RATES[] = {912000, 768000, 456000, 384000, 256000, 192000};
+/* The list the real Airspy HF+ (firmware R5.0.1-CD, lib 1.6.8) reported in Window 1. */
+static const uint32_t RATES[] = {912000, 768000, 650000, 456000, 384000, 228000, 192000};
 
 static double now_s(void) {
     struct timespec ts;
@@ -91,7 +92,7 @@ int ADDCALL airspyhf_close(airspyhf_device_t* d) {
 }
 
 int ADDCALL airspyhf_get_output_size(airspyhf_device_t* d) { (void)d; return BLOCK; }
-int ADDCALL airspyhf_is_low_if(airspyhf_device_t* d) { return d->rate <= 384000; }
+int ADDCALL airspyhf_is_low_if(airspyhf_device_t* d) { return d->rate <= 650000; }  /* as measured */
 int ADDCALL airspyhf_is_streaming(airspyhf_device_t* d) { return d->streaming; }
 
 int ADDCALL airspyhf_get_samplerates(airspyhf_device_t* d, uint32_t* buffer, const uint32_t len) {
@@ -112,7 +113,10 @@ int ADDCALL airspyhf_set_freq(airspyhf_device_t* d, const uint32_t f) {
     if (f < 9000 || f > 260000000) return AIRSPYHF_ERROR;
     pthread_mutex_lock(&d->mu);
     d->freq = f;
-    if (d->t0 > 0) d->settle_until = now_s() - d->t0 + env_d("MOCK_SETTLE_MS", 30) / 1000.0;
+    /* settle_until is wall-clock based; sample time can lag it on a slow machine, so 0 must mean
+       no junk at all rather than "until sample time catches up". */
+    double settle_ms = env_d("MOCK_SETTLE_MS", 30);
+    if (d->t0 > 0 && settle_ms > 0) d->settle_until = now_s() - d->t0 + settle_ms / 1000.0;
     pthread_mutex_unlock(&d->mu);
     return AIRSPYHF_SUCCESS;
 }
