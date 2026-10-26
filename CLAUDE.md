@@ -52,7 +52,9 @@ invent features, or weaken explicit requirements unless Adam asks.
   note (1 protocol ✅, 2 fixtures ✅, 3 C++ replay worker ✅, 4 control core ✅,
   5 ledger + auth/admin/`/healthz` ✅, 6 coexistence tooling + ADRs ✅).
   **M0 complete (2026-10-26)**: A13 passed on the Optiplex (`docs/ops/a13-result-2026-10-26.md`).
-  Next: Milestone 1 design note, for Adam's approval before any M1 code.
+  **M1 in progress**: design approved 2026-10-26 (`docs/design/M1-first-live-receiver.md`).
+  Window 1 (Airspy measurements + IQ recording) scheduled Tue 2026-10-27.
+  M1 branches: `m1/<topic>`.
 - Each block: branch `m0/<topic>` → PR → CI green → merge. Keep PRs reviewable.
 - Two Claude sessions may work on this repo: a cloud session (no LAN access)
   and a local session on the Optiplex (as `k2dev`). Check open PRs and branches

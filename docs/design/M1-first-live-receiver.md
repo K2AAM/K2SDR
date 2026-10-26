@@ -1,6 +1,7 @@
 # Milestone 1 — First live receiver: design note
 
-Status: **proposed — awaiting Adam's approval. No M1 code is written until it is approved.**
+Status: **approved by Adam, 2026-10-26 15:22 EDT** — all six decisions in §6 answered "yes";
+Window 1 scheduled for Tue 2026-10-27 (Adam working from home).
 Date: 2026-10-26. Scope source: outline §12 (Milestone 1), §3, §4, §5 (baseline audio
 only), §10 (recording, mobile), §11, §13.
 
@@ -163,7 +164,7 @@ refusal, visible disk-full state). Downloads via authenticated HTTP.
 | B9 | Recording: correct WAV, retention cap obeyed, disk-full visible | §13 |
 | B10 | OWRX coexistence trial passes before and after every window | M0 A13 |
 
-## 6. Decisions for Adam
+## 6. Decisions (all approved 2026-10-26)
 
 1. **Native libairspyhf first**, Soapy as fallback? (Recommended.)
 2. **liquid-dsp** for DSP, subject to the FFTW check on the Optiplex? (Recommended.)
@@ -171,8 +172,9 @@ refusal, visible disk-full state). Downloads via authenticated HTTP.
 3. **int16 PCM @ 12 kS/s** for M1 audio, codec decided later by measurement?
 4. **Server-side recording** first (vs. browser-side)?
 5. **Window 1** as described (~45 min, Airspy away from OWRX, `plugdev` granted
-   to k2dev for the window only). When suits you?
-6. Optional "open while OWRX holds it" test — yes, no, or later?
+   to k2dev for the window only): **Tue 2026-10-27**.
+6. Optional "open while OWRX holds it" test — **yes**: done at the start of Window 1,
+   with Adam listening to OWRX and ready to abort.
 
 ## 7. Work order after approval
 
