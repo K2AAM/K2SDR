@@ -65,6 +65,7 @@ make sync            # pinned env from control/uv.lock (needs uv)
 make check           # schema-check + fixtures-check + all tests
 make schema          # after changing k2websdr.protocol.models
 make fixtures        # after changing fixtures/gen/make_synthetic.py
+make ledger          # regenerate ledger/modes.v1.json from the outline appendix
 ```
 
 Build prerequisites: `build-essential`, `cmake`, `ninja-build`, `python3` (3.13), `uv`.
@@ -75,5 +76,5 @@ Build prerequisites: `build-essential`, `cmake`, `ninja-build`, `python3` (3.13)
 A1 integer-Hz wire ✅ · A2 command lifecycle ✅ · A3 serialized queue ✅ · A4 lease
 and job survival ✅ · A5 single device owner (flock) ✅ · A6 deterministic replay ✅ ·
 A7 stale-generation drop ✅ · A8 fixtures + replay flags ✅ ·
-A9 ledger · A10 first run, no default password · A11 HTTP+WS authz ·
+A9 ledger ✅ · A10 first run, no default password · A11 HTTP+WS authz ·
 A12 trusted proxies · A13 OWRX coexistence on the Optiplex · A14 schema ✅
