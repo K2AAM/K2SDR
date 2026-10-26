@@ -1,0 +1,33 @@
+# K2AAM WebSDR (working title)
+
+Self-hosted, **receive-only** web SDR. Scope is defined by
+[`docs/outline/WebSDR_Project_Outline-v0.1.md`](docs/outline/WebSDR_Project_Outline-v0.1.md)
+(normative; SHA-256 in `docs/outline/SHA256SUMS`).
+
+Status: Milestone 0 (foundation). Nothing here opens a physical SDR or touches
+an existing OpenWebRX+ installation.
+
+## Layout (so far)
+
+| Path | Contents |
+| --- | --- |
+| `protocol/frame_v1.h` | Canonical data-plane frame header (worker → consumers) |
+| `protocol/worker_ctl_v1.h` | Canonical control messages (control service ↔ worker) |
+| `protocol/schema/control-v1.json` | Generated JSON Schema for browser ↔ control messages |
+| `protocol/vectors/frequency_input.json` | Shared human-input → integer-Hz test vectors |
+| `control/` | Python control service package `k2websdr` |
+| `docs/protocol/` | Human-readable protocol notes |
+
+## Development
+
+Requires `uv`, a C11 and C++17 compiler (`build-essential`), and Python ≥ 3.11.
+
+```bash
+make sync          # pinned environment from control/uv.lock
+make check         # A14 schema freshness + all tests
+make schema        # regenerate protocol/schema/control-v1.json after a model change
+```
+
+## License
+
+All rights reserved, license pending. See `LICENSE` and `THIRD_PARTY.md`.
