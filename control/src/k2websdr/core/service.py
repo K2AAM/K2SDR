@@ -29,7 +29,10 @@ from .receiver import ReceiverConfig, ReceiverRuntime
 from .store import StateStore
 
 IDEMPOTENCY_TTL = 600.0
-MAX_CMD_RECORDS = 10_000      # hard bound; only finished records are ever evicted
+# Command capacity (see docs/protocol/control-v1.md, "Capacity"):
+MAX_CMD_RECORDS = 10_000      # total idempotency records: in-flight + finished
+MAX_IN_FLIGHT = 1_000         # accepted hardware commands not yet finished, all receivers
+RECEIVER_QUEUE_LIMIT = 64     # per receiver: executing + queued hardware commands
 
 
 @dataclass(frozen=True)
@@ -77,9 +80,28 @@ class Rejected(Exception):
         self.code, self.detail = code, detail
 
 
+class CapacityRejected(Rejected):
+    """Transient overload. Not recorded: it cannot grow the cache, and a later retry
+    of the same command id is evaluated afresh."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(ErrorCode.E_BUSY, detail)
+
+
 class ControlCore:
     def __init__(self, *, build: str = "dev", exposure: str = "loopback",
-                 ledger: m.LedgerSummary | None = None) -> None:
+                 ledger: m.LedgerSummary | None = None, cmd_capacity: int | None = None,
+                 in_flight_capacity: int | None = None, receiver_queue_limit: int | None = None) -> None:
+        self.cmd_capacity = cmd_capacity or MAX_CMD_RECORDS
+        # In-flight records are never evicted, so they must always leave room for at least one
+        # finished record; then evicting finished records alone keeps the total bound.
+        self.in_flight_capacity = in_flight_capacity or max(1, min(MAX_IN_FLIGHT, self.cmd_capacity - 1))
+        self.receiver_queue_limit = receiver_queue_limit or RECEIVER_QUEUE_LIMIT
+        if not 1 <= self.in_flight_capacity < self.cmd_capacity:
+            raise ValueError("need 1 <= in_flight_capacity < cmd_capacity")
+        if self.receiver_queue_limit < 1:
+            raise ValueError("receiver_queue_limit must be >= 1")
+        self._in_flight: set[tuple[str, str]] = set()
         initial = m.ServerState(server=m.ServerInfo(protocol=1, build=build, exposure=exposure),
                                 ledger=ledger or m.LedgerSummary(version=1))
         self.store = StateStore(initial)
@@ -158,6 +180,8 @@ class ControlCore:
             if needed is not None and needed not in s.principal.permissions:
                 raise Rejected(ErrorCode.E_FORBIDDEN, f"{cmd.op} requires permission {needed}")
             await getattr(self, "_op_" + cmd.op.replace(".", "_"))(s, cmd)
+        except CapacityRejected as r:
+            s.send(m.Ack(v=1, type="ack", id=cmd.id, status="rejected", code=r.code, detail=r.detail))
         except Rejected as r:
             self._reply_ack(s, cmd.id, "rejected", code=r.code, detail=r.detail)
         except LeaseError as le:
@@ -198,7 +222,7 @@ class ControlCore:
         cutoff = time.monotonic() - IDEMPOTENCY_TTL
         for k in [k for k, r in self._cmds.items() if not r.in_flight and r.finished < cutoff]:
             del self._cmds[k]
-        excess = len(self._cmds) - MAX_CMD_RECORDS
+        excess = len(self._cmds) - self.cmd_capacity
         if excess > 0:
             finished = sorted((r.finished, k) for k, r in self._cmds.items() if not r.in_flight)
             for _, k in finished[:excess]:
@@ -251,10 +275,21 @@ class ControlCore:
                 raise Rejected(ErrorCode.E_OUT_OF_RANGE, f"center_hz outside {rng[0]}..{rng[1]}")
         if a.sample_rate_hz is not None and a.sample_rate_hz not in caps["sample_rates_hz"]:
             raise Rejected(ErrorCode.E_OUT_OF_RANGE, f"sample_rate_hz not in {caps['sample_rates_hz']}")
+        self._check_capacity(rt)                  # before anything is marked pending or queued
         _rev, fut = rt.submit_set_capture(cmd.id, a.center_hz, a.sample_rate_hz,
                                           authorize=self._authorizer(s, rt, "hw.retune", a.if_capture_gen))
+        key = (s.principal.user, cmd.id)
+        self._in_flight.add(key)
         rec = self._reply_ack(s, cmd.id, "accepted")
-        self._spawn(self._finish(rec, cmd.id, fut))
+        self._spawn(self._finish(rec, key, fut))
+
+    def _check_capacity(self, rt: ReceiverRuntime) -> None:
+        if len(self._in_flight) >= self.in_flight_capacity:
+            raise CapacityRejected(f"server busy: {len(self._in_flight)} hardware commands in progress "
+                                   f"(limit {self.in_flight_capacity}); retry after some complete")
+        if rt.outstanding >= self.receiver_queue_limit:
+            raise CapacityRejected(f"{rt.id} busy: {rt.outstanding} commands queued or executing "
+                                   f"(limit {self.receiver_queue_limit}); retry after some complete")
 
     def _authorizer(self, s: Session, rt: ReceiverRuntime, permission: str, if_capture_gen: int | None):
         """Everything checked at acceptance, re-checked when the command reaches the front of the queue."""
@@ -274,9 +309,14 @@ class ControlCore:
 
         return check
 
-    async def _finish(self, rec: _CmdRecord, cmd_id: str, fut: asyncio.Future) -> None:
-        out = await fut
-        self._reply_result(rec, cmd_id, out.status, code=out.code, detail=out.detail, capture_gen=out.capture_gen)
+    async def _finish(self, rec: _CmdRecord, key: tuple[str, str], fut: asyncio.Future) -> None:
+        try:
+            out = await fut
+            self._reply_result(rec, key[1], out.status, code=out.code, detail=out.detail,
+                               capture_gen=out.capture_gen)
+        finally:
+            self._in_flight.discard(key)
+            self._expire_cmds()
 
     async def _op_receiver_set_antenna(self, s: Session, cmd: m.ReceiverSetAntenna) -> None:
         rt = self._receiver(cmd.args.receiver)

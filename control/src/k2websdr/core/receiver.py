@@ -107,6 +107,7 @@ class ReceiverRuntime:
         self.capture_gen = 0
         self.frame_listeners: list[Callable[[str, FrameHeader, bytes], None]] = []
         self.executed: list[str] = []         # command ids in execution order (observability/tests)
+        self._executing = False
 
     # ----------------------------------------------------------- state shape
     def initial_state(self) -> m.ReceiverState:
@@ -223,6 +224,11 @@ class ReceiverRuntime:
             log.warning("%s: restart failed: %s", self.id, e)
 
     @property
+    def outstanding(self) -> int:
+        """Hardware commands queued or executing on this receiver."""
+        return self._queue.qsize() + (1 if self._executing else 0)
+
+    @property
     def restarts(self) -> int:
         return self._restarts
 
@@ -254,16 +260,22 @@ class ReceiverRuntime:
         return self.store.rev, fut
 
     async def _execute(self) -> None:
-        from ..devices.worker_client import WorkerGone, WorkerRejected, WorkerFailed, WorkerTimeout
-
         while True:
             q = await self._queue.get()
-            denied = q.authorize() if q.authorize is not None else None
-            if denied is not None:
-                outcome = self._record_failure(q, denied[0], detail=denied[1])
-                if not q.future.done():
-                    q.future.set_result(outcome)
-                continue
+            self._executing = True
+            try:
+                await self._run_one(q)
+            finally:
+                self._executing = False
+
+    async def _run_one(self, q: _Queued) -> None:
+        """Re-authorize, execute and resolve one command. Always resolves q.future exactly once."""
+        from ..devices.worker_client import WorkerGone, WorkerRejected, WorkerFailed, WorkerTimeout
+
+        denied = q.authorize() if q.authorize is not None else None
+        if denied is not None:
+            outcome = self._record_failure(q, denied[0], detail=denied[1])
+        else:
             self.executed.append(q.cmd_id)
             try:
                 if self._link is None:
@@ -278,8 +290,8 @@ class ReceiverRuntime:
             else:
                 rev = self._record_applied(ap, cmd_id=q.cmd_id, fields=self._fields(q))
                 outcome = CommandOutcome("applied", rev, capture_gen=ap.capture_gen)
-            if not q.future.done():
-                q.future.set_result(outcome)
+        if not q.future.done():
+            q.future.set_result(outcome)
 
     @staticmethod
     def _fields(q: _Queued) -> list[str]:
