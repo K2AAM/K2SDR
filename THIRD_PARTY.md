@@ -19,7 +19,7 @@ repository at this time.
 | uvicorn | 0.54.0 | BSD-3-Clause | https://github.com/encode/uvicorn |
 | websockets | 17.3 | BSD-3-Clause | https://github.com/python-websockets/websockets |
 | h11 | 0.16.0 | MIT | https://github.com/python-hyper/h11 |
-| anyio | 4.15.1 | MIT | https://github.com/agronholm/anyio |
+| anyio | 4.15.1 | MIT | https://github.com/agronholm/anyio (also used directly: WebSocket task groups) |
 | idna | 3.20 | BSD-3-Clause | https://github.com/kjd/idna |
 | click | 8.5.0 | BSD-3-Clause | https://github.com/pallets/click (uvicorn CLI dependency) |
 | annotated-doc | 0.0.5 | MIT | https://github.com/fastapi/annotated-doc |

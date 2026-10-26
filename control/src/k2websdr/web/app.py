@@ -15,7 +15,6 @@ Security posture (outline §9; acceptance A10–A12):
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import sqlite3
@@ -24,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
 
+import anyio
 from fastapi import FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -319,12 +319,12 @@ def create_app(cfg: Config, *, link_factory=None) -> FastAPI:
         st.sockets.setdefault(info.token_hash, set()).add(ws)
         bucket = TokenBucket(cfg.ws_messages_per_second, cfg.ws_burst)
 
-        async def pump():
+        async def pump() -> None:
             while True:
                 msg = await sess.outbox.get()
                 await ws.send_text(msg.model_dump_json())
 
-        async def receive_loop():
+        async def receive_loop() -> str | None:
             while True:
                 raw = await ws.receive_text()
                 if acc.lookup_session(st.conn, token) is None:
@@ -335,32 +335,38 @@ def create_app(cfg: Config, *, link_factory=None) -> FastAPI:
                     continue
                 await st.core.handle(sess, raw)
 
-        async def session_watchdog():
+        async def session_watchdog() -> str:
             # Enforces expiry and revocation on idle sockets, independently of client messages:
             # wake at the session's expiry, and at least every ws_session_recheck_s for revocations
             # made elsewhere (another process, or the database directly).
             while True:
                 remaining = (info.expires - datetime.now(timezone.utc)).total_seconds()
-                await asyncio.sleep(max(0.0, min(remaining, cfg.ws_session_recheck_s)))
+                await anyio.sleep(max(0.0, min(remaining, cfg.ws_session_recheck_s)))
                 if acc.lookup_session(st.conn, token) is None:
                     return "session expired or revoked"
 
-        tasks = [asyncio.create_task(pump(), name="ws-send"),
-                 asyncio.create_task(receive_loop(), name="ws-recv"),
-                 asyncio.create_task(session_watchdog(), name="ws-session")]
+        # Structured concurrency (anyio, as Starlette uses): whichever of the three ends first ends
+        # the connection; the task group cancels the others, and outer cancellation (server
+        # shutdown, client gone) is handled by the same mechanism.
         try:
-            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            ended = next(iter(done))
-            if ended.get_name() in ("ws-recv", "ws-session") and not ended.cancelled() \
-                    and ended.exception() is None and ended.result():
-                try:
-                    await ws.close(code=4401, reason=ended.result())
-                except RuntimeError:
-                    pass
+            async with anyio.create_task_group() as tg:
+                async def first_to_end(fn) -> None:
+                    try:
+                        reason = await fn()
+                    except (WebSocketDisconnect, RuntimeError):
+                        reason = None                     # client went away or socket already closed
+                    if reason:
+                        with anyio.CancelScope(shield=True):
+                            try:
+                                await ws.close(code=4401, reason=reason)
+                            except RuntimeError:
+                                pass
+                    tg.cancel_scope.cancel()
+
+                tg.start_soon(first_to_end, pump)
+                tg.start_soon(first_to_end, receive_loop)
+                tg.start_soon(first_to_end, session_watchdog)
         finally:
-            for t in tasks:
-                t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
             # Ending the core session releases this session's operator leases; job leases are untouched.
             st.core.close_session(sess)
             st.sockets.get(info.token_hash, set()).discard(ws)

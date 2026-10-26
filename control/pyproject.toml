@@ -12,6 +12,7 @@ dependencies = [
     "websockets==17.3",  # uvicorn's WebSocket implementation
     "argon2-cffi==25.1.0",
     "python-multipart==0.0.32",
+    "anyio==4.15.1",  # used directly by the WebSocket handler (task groups)
 ]
 
 [project.scripts]

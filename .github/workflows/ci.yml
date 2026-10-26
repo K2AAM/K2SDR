@@ -56,5 +56,7 @@ jobs:
           msg = msg.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
           print(f"::error title=make check failed::{msg[:60000]}")
           PY
+      - name: Tests pinned to one CPU core (exposes concurrency races)
+        run: taskset -c 0 make test
       - name: Worker tests under AddressSanitizer + UBSan
         run: make test-worker-san

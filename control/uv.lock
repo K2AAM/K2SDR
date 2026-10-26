@@ -270,6 +270,7 @@ name = "k2websdr"
 version = "0.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "argon2-cffi" },
     { name = "fastapi" },
     { name = "pydantic" },
@@ -287,6 +288,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = "==4.15.1" },
     { name = "argon2-cffi", specifier = "==25.1.0" },
     { name = "fastapi", specifier = "==0.162.0" },
     { name = "pydantic", specifier = "==2.14.1" },
