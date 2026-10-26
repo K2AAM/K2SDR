@@ -10,6 +10,10 @@
 //   stream      --serial HEX --freq HZ --rate HZ --seconds N [gain options]
 //   record      --serial HEX --freq HZ --rate HZ --seconds N --out BASE
 //               [--retune HZ@SECONDS]... [gain options]
+//   stream/record also take --timing-log FILE: one CSV row per callback (host CLOCK_MONOTONIC
+//   ns at the callback, cumulative samples incl. that block, block size, library drop count)
+//   and one per retune (call and return times). Used to measure samples lost on retune
+//   (tools/window1/timing.py). Rows are kept in memory and written after streaming stops.
 //
 // gain options: --hf-agc 0|1 --hf-agc-threshold 0|1 --hf-att 0..8 --hf-lna 0|1 --lib-dsp 0|1
 //
@@ -114,6 +118,7 @@ struct Opts {
     uint64_t serial = 0;
     uint64_t freq = 0, rate = 0, seconds = 0;
     std::string out;
+    std::string timing_log;
     std::vector<Retune> retunes;
     int hf_agc = -1, hf_agc_threshold = -1, hf_att = -1, hf_lna = -1, lib_dsp = -1;
 };
@@ -140,6 +145,7 @@ Opts parse(int argc, char** argv) {
         else if (k == "--rate") o.rate = num(1, 100000000);
         else if (k == "--seconds") o.seconds = num(1, 86400);
         else if (k == "--out") o.out = v;
+        else if (k == "--timing-log") o.timing_log = v;
         else if (k == "--hf-agc") o.hf_agc = static_cast<int>(num(0, 1));
         else if (k == "--hf-agc-threshold") o.hf_agc_threshold = static_cast<int>(num(0, 1));
         else if (k == "--hf-att") o.hf_att = static_cast<int>(num(0, 8));
@@ -269,7 +275,16 @@ struct Block {
     uint64_t dropped_before = 0;  // samples lost (library + queue overflow) just before this block
 };
 
+struct CbRec {
+    uint64_t t_ns, samples_total, dropped;
+    uint32_t count;
+};
+
 struct StreamState {
+    // Per-callback timing (only when --timing-log): written by the callback thread alone,
+    // read by main after airspyhf_stop() has joined that thread.
+    std::vector<CbRec> cb_log;
+    std::atomic<size_t> cb_n{0};
     std::atomic<uint64_t> callbacks{0}, samples{0}, dropped{0}, max_gap_ns{0}, last_cb_ns{0};
     std::atomic<uint64_t> queue_overflow_blocks{0}, queue_overflow_samples{0};
     bool recording = false;
@@ -294,7 +309,15 @@ int callback(airspyhf_transfer_t* t) {
         }
     }
     st->callbacks++;
-    st->samples += static_cast<uint64_t>(t->sample_count);
+    const uint64_t total = st->samples.fetch_add(static_cast<uint64_t>(t->sample_count)) +
+                           static_cast<uint64_t>(t->sample_count);
+    if (!st->cb_log.empty()) {
+        size_t i = st->cb_n.load(std::memory_order_relaxed);
+        if (i < st->cb_log.size()) {
+            st->cb_log[i] = {now, total, t->dropped_samples, static_cast<uint32_t>(t->sample_count)};
+            st->cb_n.store(i + 1, std::memory_order_release);
+        }
+    }
     // libairspyhf 1.6.8 reports the samples lost immediately before *this* block
     // (dropped_buffers is reset each time a buffer is queued): a per-callback count.
     const uint64_t lost = t->dropped_samples;
@@ -435,6 +458,13 @@ int run_stream(const Opts& o, bool record) {
         });
     }
 
+    struct RetuneRec { uint64_t call_ns, return_ns, freq; int result; };
+    std::vector<RetuneRec> retune_log;
+    if (!o.timing_log.empty()) {
+        // Room for every callback at the smallest block the library uses (1024) plus 25 %.
+        size_t n = static_cast<size_t>(static_cast<double>(o.seconds) * static_cast<double>(o.rate) / 1024.0 * 1.25) + 1024;
+        st.cb_log.resize(n);
+    }
     std::string started = utc_now_iso();
     double cpu0 = cpu_seconds();
     int r = airspyhf_start(dev, callback, &st);
@@ -461,7 +491,9 @@ int run_stream(const Opts& o, bool record) {
                 at_file_sample = st.enqueued;  // file-space index: excludes lost samples
             }
             int rr = airspyhf_set_freq(dev, static_cast<uint32_t>(o.retunes[next_retune].freq_hz));
-            double call_ms = static_cast<double>(mono_ns() - tc) / 1e6;
+            uint64_t tr = mono_ns();
+            double call_ms = static_cast<double>(tr - tc) / 1e6;
+            retune_log.push_back({tc, tr, o.retunes[next_retune].freq_hz, rr});
             std::printf("{\"event\":\"retune\",\"freq_hz\":%llu,\"result\":%d,\"at_sample\":%llu,\"call_ms\":%.2f}\n",
                         static_cast<unsigned long long>(o.retunes[next_retune].freq_hz), rr,
                         static_cast<unsigned long long>(at_sample), call_ms);
@@ -531,6 +563,30 @@ int run_stream(const Opts& o, bool record) {
                 static_cast<unsigned long long>(written), static_cast<unsigned long long>(st.queue_overflow_blocks.load()),
                 static_cast<unsigned long long>(st.queue_overflow_samples.load()), record ? captures.size() : 0,
                 record ? (recording_ok ? "true" : "false") : "null");
+    if (!o.timing_log.empty()) {
+        FILE* f = std::fopen(o.timing_log.c_str(), "w");
+        bool ok = f != nullptr;
+        if (f) {
+            std::fprintf(f, "kind,t_ns,a,b,c\n# cb: a=samples_total b=count c=dropped; retune: a=return_ns b=freq_hz c=result\n");
+            const size_t n = st.cb_n.load(std::memory_order_acquire);
+            for (size_t i = 0; i < n; ++i) {
+                const CbRec& c = st.cb_log[i];
+                std::fprintf(f, "cb,%llu,%llu,%u,%llu\n", static_cast<unsigned long long>(c.t_ns),
+                             static_cast<unsigned long long>(c.samples_total), c.count,
+                             static_cast<unsigned long long>(c.dropped));
+            }
+            for (const RetuneRec& rt : retune_log)
+                std::fprintf(f, "retune,%llu,%llu,%llu,%d\n", static_cast<unsigned long long>(rt.call_ns),
+                             static_cast<unsigned long long>(rt.return_ns), static_cast<unsigned long long>(rt.freq),
+                             rt.result);
+            ok = !std::ferror(f);
+            ok = (std::fclose(f) == 0) && ok;
+        }
+        std::printf("{\"event\":\"timing_log\",\"path\":\"%s\",\"callbacks\":%zu,\"truncated\":%s,\"ok\":%s}\n",
+                    json_escape(o.timing_log).c_str(), st.cb_n.load(),
+                    st.cb_n.load() >= st.cb_log.size() ? "true" : "false", ok ? "true" : "false");
+        if (!ok) return 5;
+    }
     if (!recording_ok) return 5;
     return device_lost ? 4 : 0;
 }

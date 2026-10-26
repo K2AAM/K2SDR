@@ -340,3 +340,20 @@ def test_full_window_rehearsal(tmp_path):
         assert sum(1 for e in log if e.get("event") == "summary" and e.get("mode") == "record") == 7
     finally:
         cleanup_window()
+
+
+@pytest.mark.parametrize("loss", [0, 3000])
+def test_timing_log_measures_samples_lost_on_retune(tmp_path, loss):
+    log = tmp_path / "timing.csv"
+    code, out = probe("stream", "--serial", SERIAL, "--freq", "10005000", "--rate", "192000", "--seconds", "6",
+                      "--retune", "15005000@2", "--retune", "10005000@4", "--timing-log", str(log),
+                      env={"MOCK_RETUNE_LOSS": str(loss)})
+    assert code == 0
+    (tl,) = events(out, "timing_log")
+    assert tl["ok"] and not tl["truncated"] and tl["callbacks"] > 1000
+    res = tool("timing.py", log, "--rate", 192000)
+    assert len(res) == 2
+    for r in res:
+        assert abs(r["lost_samples"] - loss) < 150, res               # < 1 ms at 192k
+        assert r["library_dropped_in_span"] == 0                       # the mock hides it, like a silent loss
+        assert abs(r["rate_before_hz"] - 192000) < 200 and abs(r["rate_after_hz"] - 192000) < 200

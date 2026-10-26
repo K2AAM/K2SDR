@@ -15,6 +15,8 @@
  * Like libairspyhf 1.6.8, transfer.dropped_samples is the loss immediately before
  * that block (per callback), not a running total.
  *   MOCK_UNPLUG_AT_S=<s>       stop streaming at this time (is_streaming -> 0)
+ *   MOCK_RETUNE_LOSS=<n>       each set_freq while streaming silently skips n samples
+ *                              (time advances, nothing delivered, nothing reported)
  * Test-only. Not part of any shipped binary.
  */
 #include <airspyhf.h>
@@ -35,7 +37,8 @@ struct airspyhf_device {
     uint32_t rate;
     double freq;
     atomic_int streaming;
-    pthread_mutex_t mu;   /* guards freq, settle_until, t0 (set_freq runs on the caller's thread) */
+    pthread_mutex_t mu;   /* guards freq, settle_until, t0, skip (set_freq runs on the caller's thread) */
+    uint64_t skip;
     pthread_t thread;
     airspyhf_sample_block_cb_fn cb;
     void* ctx;
@@ -116,7 +119,10 @@ int ADDCALL airspyhf_set_freq(airspyhf_device_t* d, const uint32_t f) {
     /* settle_until is wall-clock based; sample time can lag it on a slow machine, so 0 must mean
        no junk at all rather than "until sample time catches up". */
     double settle_ms = env_d("MOCK_SETTLE_MS", 30);
-    if (d->t0 > 0 && settle_ms > 0) d->settle_until = now_s() - d->t0 + settle_ms / 1000.0;
+    if (d->t0 > 0) {
+        if (settle_ms > 0) d->settle_until = now_s() - d->t0 + settle_ms / 1000.0;
+        d->skip += (uint64_t)env_d("MOCK_RETUNE_LOSS", 0);
+    }
     pthread_mutex_unlock(&d->mu);
     return AIRSPYHF_SUCCESS;
 }
@@ -181,7 +187,10 @@ static void* stream_thread(void* arg) {
         if (drop_at > 0 && t >= drop_at && next_drop < ndrops) { lost = drops[next_drop++]; n += lost; }
         pthread_mutex_lock(&d->mu);
         const double freq = d->freq, settle_until = d->settle_until;
+        const uint64_t skip = d->skip;
+        d->skip = 0;
         pthread_mutex_unlock(&d->mu);
+        n += skip;   /* lost silently, like a device that discards on retune */
         int settling = t < settle_until;
         for (int i = 0; i < BLOCK; i++) {
             double off1 = tone1 - freq, off2 = tone2 - freq;
