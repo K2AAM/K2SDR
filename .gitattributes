@@ -1,0 +1,2 @@
+# Fixture datasets are raw samples: never convert line endings or text-diff them.
+*.sigmf-data binary
