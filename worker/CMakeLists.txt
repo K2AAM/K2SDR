@@ -40,6 +40,22 @@ target_link_libraries(ksdr-worker PRIVATE k2_liquid)
 # Link map: every input file the linker used (archives and members), checked by tools/check_dsp_deps.py.
 target_link_options(ksdr-worker PRIVATE "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/ksdr-worker.map")
 
+# Worker DSP (M1 §3.2): spectrum, channels, AGC. Same strict warnings as the worker.
+add_library(k2dsp STATIC src/dsp/convert.cpp src/dsp/agc.cpp src/dsp/spectrum.cpp src/dsp/channel.cpp)
+target_include_directories(k2dsp PUBLIC src)
+target_compile_options(k2dsp PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror)
+target_link_libraries(k2dsp PUBLIC k2_liquid)
+add_executable(ksdr-dsp-run dsp/dsp_run.cpp)
+target_compile_options(ksdr-dsp-run PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror)
+target_link_libraries(ksdr-dsp-run PRIVATE k2dsp)
+target_link_options(ksdr-dsp-run PRIVATE "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/ksdr-dsp-run.map")
+if(K2_SANITIZE)
+  foreach(t k2dsp ksdr-dsp-run)
+    target_compile_options(${t} PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+  endforeach()
+  target_link_options(ksdr-dsp-run PRIVATE -fsanitize=address,undefined)
+endif()
+
 # liquid-dsp verification and benchmark harness (tests only; not shipped).
 add_executable(ksdr-dsp-check dsp/dsp_check.cpp)
 target_include_directories(ksdr-dsp-check PRIVATE src)

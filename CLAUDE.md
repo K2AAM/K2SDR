@@ -58,7 +58,8 @@ invent features, or weaken explicit requirements unless Adam asks.
   unplug; device settings persist across opens. Real clips in `fixtures/real/airspyhf/`.
   Antenna: W6LVP loop; an LZ1AQ loop is planned (re-run the H3 gain sweep when it replaces it).
   Approved gain defaults: AGC on, threshold low, LNA on, attenuator 0.
-  DSP: liquid-dsp 1.8.3 built without FFTW (`make liquid`, `docs/ops/liquid-dsp-1.8.3.md`).
+  DSP: liquid-dsp 1.8.3 built without FFTW (`make liquid`, `docs/ops/liquid-dsp-1.8.3.md`);
+  worker DSP library `k2dsp` (spectrum, channels, own look-ahead AGC): `docs/design/M1-dsp.md`.
   M1 branches: `m1/<topic>`.
 - Each block: branch `m0/<topic>` → PR → CI green → merge. Keep PRs reviewable.
 - Two Claude sessions may work on this repo: a cloud session (no LAN access)

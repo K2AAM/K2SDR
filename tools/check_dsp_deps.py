@@ -40,7 +40,7 @@ import fetch_liquid as pin  # noqa: E402
 ALLOWED_FFTW_NAMED = {"liquid_fftwf_cleanup_wrapper"}
 ALLOWED_NEEDED = re.compile(r"^(libc\.so\.6|libm\.so\.6|libstdc\+\+\.so\.6|libgcc_s\.so\.1|libpthread\.so\.0|"
                             r"ld-linux-[\w-]+\.so\.\d)$")
-BINARIES = ("ksdr-worker", "ksdr-dsp-check")
+BINARIES = ("ksdr-worker", "ksdr-dsp-check", "ksdr-dsp-run")
 
 
 def run(*cmd: str) -> str:
@@ -135,11 +135,12 @@ def check(build: Path, prefix: Path, expect_fftw: bool, expect_debian_liquid: bo
         link_lines = [ln for ln in ninja.splitlines() if ln.strip().startswith("LINK_") or "-o " + name in ln]
         if any("fftw" in ln.lower() for ln in link_lines):
             fails.append(f"{name}: link command mentions fftw")
-        flag = "--version" if name == "ksdr-worker" else "version"
-        out = run(str(b), flag).strip()
-        r["version_output"] = out
-        if pin.PIN_VERSION not in out:
-            fails.append(f"{name}: runtime liquid-dsp version is not {pin.PIN_VERSION}: {out}")
+        if name in ("ksdr-worker", "ksdr-dsp-check"):          # ksdr-dsp-run has no version command
+            flag = "--version" if name == "ksdr-worker" else "version"
+            out = run(str(b), flag).strip()
+            r["version_output"] = out
+            if pin.PIN_VERSION not in out:
+                fails.append(f"{name}: runtime liquid-dsp version is not {pin.PIN_VERSION}: {out}")
         rep["binaries"][name] = r
 
     fftw_present = [str(p) for p in (*Path("/usr/lib").rglob("libfftw3f.so*"), *Path("/usr/include").glob("fftw3.h"))]
