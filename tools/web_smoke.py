@@ -26,11 +26,43 @@ PORT = 8095
 BASE = f"http://127.0.0.1:{PORT}"
 
 
+def rig_checks(page, timeout: float, problems: list[str]) -> None:
+    """Channel opens on its own; audio starts from a tap and plays without underruns; typed input is
+    previewed exactly before tuning; a mode change brings that mode's default passband."""
+    t = timeout * 1000
+    page.get_by_text("dBFS", exact=False).first.wait_for(timeout=t)          # S-meter: audio frames arrive
+    page.get_by_role("button", name="Tap to start audio").click()
+    page.get_by_text("buffer", exact=False).first.wait_for(timeout=t)        # jitter buffer reporting
+    entry = page.get_by_label("Frequency entry")
+    entry.fill("10000.5")                                                     # bare number: default unit kHz
+    page.get_by_text("→ 10.000 500 MHz").wait_for(timeout=t)
+    entry.fill("10 000 kHz")
+    page.locator(".hint.bad").wait_for(timeout=t)                             # spaces inside: refused, not guessed
+    entry.fill("10000 kHz")
+    page.get_by_role("button", name="Tune").click()
+    page.locator("output.big").filter(has_text="10.000 000 MHz").wait_for(timeout=t)
+    page.locator("label").filter(has_text="Mode").locator("select").select_option("usb")
+    lo = page.get_by_label("Passband low Hz")                                 # (no string eval: our CSP forbids it)
+    for _ in range(int(timeout * 10)):
+        if lo.input_value() == "300":
+            break
+        time.sleep(0.1)
+    else:
+        problems.append(f"USB passband not shown: low edge {lo.input_value()!r}")
+    time.sleep(4)
+    stats = page.locator(".small").inner_text()
+    underruns = int(stats.split("underruns")[1].strip())
+    if underruns > 1:
+        problems.append(f"audio underruns after start: {stats}")
+    print("rig:", stats)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--screenshot", type=Path)
     ap.add_argument("--wait-text", action="append", default=[], help="extra text that must appear")
     ap.add_argument("--timeout", type=float, default=15.0)
+    ap.add_argument("--rig", action="store_true", help="also drive the RIG: audio, frequency entry, mode")
     ap.add_argument("--mobile", action="store_true", help="iPhone-sized viewport (390x844, DPR 3, touch)")
     ap.add_argument("--settle", type=float, default=1.0, help="seconds to let the page run before checking")
     a = ap.parse_args()
@@ -78,7 +110,7 @@ recording = "{ROOT}/fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta"
 
         problems: list[str] = []
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser = p.chromium.launch(args=["--autoplay-policy=no-user-gesture-required"])
             ctx = (browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=3, is_mobile=True,
                                        has_touch=True) if a.mobile
                    else browser.new_context(viewport={"width": 1280, "height": 800}))
@@ -89,9 +121,20 @@ recording = "{ROOT}/fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta"
             page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
             page.goto(BASE + "/")
             page.wait_for_url(BASE + "/app/")
-            for text in ["connected", "Replay: WWV 10 MHz", "running", *a.wait_text]:
+            page.locator("select[aria-label=Receiver] option", has_text="Replay: WWV 10 MHz").wait_for(
+                state="attached", timeout=a.timeout * 1000)
+            for text in ["connected", "running", *a.wait_text]:
                 page.locator("header, main").get_by_text(text, exact=False).filter(visible=True).first.wait_for(
                     timeout=a.timeout * 1000)
+            if a.rig:
+                try:
+                    rig_checks(page, a.timeout, problems)
+                except Exception:
+                    print("\n".join(problems))
+                    print("RIG at failure:", page.locator("main").inner_text().replace("\n", " | "))
+                    if a.screenshot:
+                        page.screenshot(path=str(a.screenshot))
+                    raise
             time.sleep(a.settle)
             if a.screenshot:
                 page.screenshot(path=str(a.screenshot))

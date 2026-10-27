@@ -19,6 +19,8 @@ interface Pending { resolve: (o: Outcome) => void; ack?: Ack }
 
 export class Connection {
   status: ConnStatus = "connecting";
+  /** Increments on every successful (re)connect; session resources belong to one epoch. */
+  epoch = 0;
   state: { [k: string]: Json } | null = null;
   private rev = -1;
   private ws: WebSocket | null = null;
@@ -46,6 +48,7 @@ export class Connection {
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onopen = () => {
+      this.epoch++;
       this.retry = 0;
       this.setStatus("open");
       void this.command("session.hello", { client: "k2websdr-web" });
