@@ -237,11 +237,12 @@ def test_untrusted_text_is_escaped_in_pages(admin):
 
 
 def test_status_and_modes_pages(admin):
-    assert "0 of 74 baseline modes available" in admin.get("/").text
+    assert "6 of 74 baseline modes available" in admin.get("/").text
     modes = admin.get("/modes").text
     assert "required dependency &#x27;ale2g&#x27; not detected" in modes
     api = admin.get("/api/modes").json()
-    assert api["available"] == [] and len(api["unavailable"]) == 74
+    assert sorted(api["available"]) == ["am", "cw", "lsb", "nfm", "usb", "wfm"]
+    assert len(api["unavailable"]) == 68
 
 
 def test_api_requires_session(cfg):

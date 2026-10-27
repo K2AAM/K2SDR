@@ -45,25 +45,55 @@ def test_ledger_shape():
     assert led.provenance.upstream.commit == "86915038202fb273c13274420c7e882b32b19a0a"
 
 
-def test_ledger_is_data_only_in_m0():
+M1_MODES = ["am", "usb", "lsb", "cw", "nfm", "wfm"]          # k2dsp, ledger/integrations.v1.json
+OVERLAY = ROOT / "ledger/integrations.v1.json"
+
+
+def test_only_overlay_entries_are_integrated_everything_else_is_data_only():
     led = load_ledger(LEDGER)
+    overlay = json.loads(OVERLAY.read_text())["entries"]
+    assert sorted(overlay) == sorted(M1_MODES)
     for e in led.entries:
-        assert (e.status, e.adapter, e.engine_version, e.test_result, e.live_validation) == \
-            ("not_started", None, None, None, "none"), e.id
+        if e.id in overlay:
+            assert e.status == "integrated" and e.adapter == f"k2dsp:{e.id}" and e.test_result, e.id
+        else:
+            assert (e.status, e.adapter, e.engine_version, e.test_result, e.live_validation) == \
+                ("not_started", None, None, None, "none"), e.id
+    assert led.provenance.integrations_from == "integrations.v1.json"
 
 
-def test_nothing_is_available_and_every_mode_says_why():
+def test_overlay_claims_are_backed_by_files_and_tests():
+    """'recorded' needs a committed real recording; every test named must exist."""
+    import re
+    led = load_ledger(LEDGER).by_id()
+    for mid in M1_MODES:
+        e = led[mid]
+        if e.live_validation == "recorded":
+            assert e.reference_sample and (ROOT / e.reference_sample).is_file(), mid
+            assert "fixtures/real/" in e.reference_sample, mid
+        assert e.live_validation != "live", f"{mid}: no live-RF evidence has been recorded yet"
+        names = re.findall(r"\b(test_[a-z0-9_]+)(?!\.py)\b", e.test_result)
+        files = re.findall(r"([a-z0-9_/]*test_[a-z0-9_]+\.py)", e.test_result)
+        sources = "".join((ROOT / "control/tests" / Path(f).name).read_text() for f in files)
+        for n in names:
+            assert f"def {n}(" in sources, (mid, n)
+    assert [m for m in M1_MODES if led[m].live_validation == "recorded"] == ["am", "usb"]
+
+
+def test_unavailable_modes_say_why_and_the_m1_modes_are_available():
     led = load_ledger(LEDGER)
     reasons = availability(led)
-    assert all(reasons[e.id] for e in led.entries)
-    assert all("no adapter integrated" in reasons[e.id][0] for e in led.entries)
+    assert sorted(summary(led).available) == sorted(M1_MODES)
+    for e in led.entries:
+        if e.id not in M1_MODES:
+            assert reasons[e.id] and "no adapter integrated" in reasons[e.id][0], e.id
     assert "required dependency 'ale2g' not detected on this host" in reasons["ale2g"]
-    assert summary(led).available == []
 
 
-def test_core_exposes_empty_availability(tmp_path):
+def test_core_exposes_the_available_modes(tmp_path):
     core = ControlCore(ledger=summary(load_ledger(LEDGER)))
-    assert core.store.view()["ledger"] == {"version": 1, "available": []}
+    view = core.store.view()["ledger"]
+    assert view["version"] == 1 and sorted(view["available"]) == sorted(M1_MODES)
 
 
 def _entry(**kw) -> LedgerEntry:

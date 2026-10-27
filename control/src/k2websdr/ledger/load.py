@@ -5,7 +5,7 @@ A mode is available only when (outline §2, §6):
   - its required dependency has been detected on this host,
   - (later) the receiver's bandwidth and signal format support it.
 Every unavailable mode carries human-readable reasons for the admin view.
-In M0 no adapter exists, so nothing is available.
+Integrations come from the reviewed overlay ledger/integrations.v1.json (M1: k2dsp modes).
 """
 
 from __future__ import annotations
@@ -49,6 +49,7 @@ class Provenance(m.Strict):
     outline_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     upstream: Upstream
     note: str
+    integrations_from: str | None = None     # reviewed overlay merged by tools/import_ledger.py
 
 
 class Ledger(m.Strict):

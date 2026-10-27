@@ -109,9 +109,35 @@ leases are unaffected.
 `sample_rate_hz` uses `SampleRateField` (integer Hz, 1–4 294 967 295). Every
 state commit and every snapshot is validated against these bounds.
 
+## Channels (M1)
+
+`channel.open` / `channel.tune` / `channel.close` need the `listen` permission and **no lease**:
+a channel is a listener's own demodulator inside the receiver's current capture span, not
+global device state. Frequencies are absolute dial `frequency_hz`; the server converts to an
+offset from the applied capture centre for the worker.
+
+- **Availability** (outline: adapter + dependencies + hardware bandwidth): the mode must be in
+  the ledger's `available` list (`ledger/integrations.v1.json`) *and* fit this receiver
+  (complex IQ; capture rate ≥ the mode's channel rate: 12 kS/s AM/USB/LSB/CW, 24 kS/s NFM,
+  192 kS/s WFM). Otherwise `E_MODE_UNAVAILABLE` with the reason.
+- **Span**: the mode's default passband around `frequency_hz` must lie inside the capture span,
+  else `E_OUT_OF_RANGE` with the frequencies that would fit.
+- **Lifecycle**: ack, then one result after the worker applied it. `result.channel` and
+  `result.channel_gen` identify it; the state gains `channels.<id>` only once applied.
+- **Ownership**: only the session that opened a channel may tune or close it (`E_FORBIDDEN`).
+  Closing the session closes its channels.
+- **Generations**: tuning only the frequency keeps `channel_gen`; a mode change bumps it.
+  `channel.tune` accepts `if_channel_gen` (`E_STALE_PRECONDITION`).
+- **Capture changes**: after a capture readback the server re-tunes every channel to keep its
+  absolute `frequency_hz` (new `channel_gen`); a channel that no longer fits is closed and
+  removed from the state. After a worker restart, channels are opened again.
+- **Limits**: 4 channels per session and 16 per receiver (`E_BUSY`); at most 8 channel commands
+  of one session waiting for the worker (`E_BUSY`, not recorded, like other capacity limits).
+- Passband, AGC and BFO use the mode defaults (`docs/design/M1-dsp.md`); controls for them,
+  and the binary spectrum/audio stream to the browser, are the next additions.
+
 ## Deferred within v1 (additive later)
 
 - Hardware gain and antenna worker messages: defined with M1/M2 hardware.
 - Client job/scan operations: with the M4 scanner.
 - Listener audio controls: per-session, never global state.
-- Channels: `channel.open` returns `E_MODE_UNAVAILABLE` until modes exist (M1).

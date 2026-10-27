@@ -107,6 +107,9 @@ class ReceiverRuntime:
         self._restarts = 0
         self.capture_gen = 0
         self.frame_listeners: list[Callable[[str, FrameHeader, bytes], None]] = []
+        # Called after the capture may have changed under the listener channels: a new readback
+        # (restarted=False) or a fresh worker that has no channels yet (restarted=True).
+        self.on_capture_change: Callable[["ReceiverRuntime", bool], None] | None = None
         self.executed: list[str] = []         # command ids in execution order (observability/tests)
         self._executing = False
 
@@ -175,6 +178,8 @@ class ReceiverRuntime:
             t.replace(*self._path("capture", "sample_rate_hz"),
                       value=m.SampleRateField(requested=rec.sample_rate_hz, applied=rec.sample_rate_hz,
                                               status="applied", verified="none"))
+        if self.on_capture_change is not None:
+            self.on_capture_change(self, True)
 
     async def stop(self) -> None:
         self._stopping = True
@@ -326,6 +331,8 @@ class ReceiverRuntime:
                 else:
                     continue
                 t.replace(*self._path("capture", name), value=new)   # validated with the whole state at commit
+        if self.on_capture_change is not None:
+            self.on_capture_change(self, False)
         return self.store.rev
 
     def _record_failure(self, q: _Queued, code: ErrorCode, detail: str | None = None) -> CommandOutcome:
