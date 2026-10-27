@@ -46,12 +46,15 @@ def receiver_mode_problem(mode: str, sample_rate_hz: int | None, complex_iq: boo
     return None
 
 
-def span_problem(mode: str, frequency_hz: int, center_hz: int, sample_rate_hz: int) -> str | None:
-    """Why a channel at frequency_hz does not fit the capture span, or None."""
+def span_problem(mode: str, frequency_hz: int, center_hz: int, sample_rate_hz: int,
+                 passband_hz: tuple[int, int] | None = None) -> str | None:
+    """Why a channel at frequency_hz (with this passband, default: the mode's) does not fit the
+    capture span, or None."""
     wm = WORKER_MODES[mode]
+    p_lo, p_hi = passband_hz if passband_hz is not None else (wm.pass_lo_hz, wm.pass_hi_hz)
     offset = frequency_hz - center_hz
     half = sample_rate_hz // 2
-    if offset + wm.pass_lo_hz < -half or offset + wm.pass_hi_hz > half:
-        lo, hi = center_hz - half - wm.pass_lo_hz, center_hz + half - wm.pass_hi_hz
+    if offset + p_lo < -half or offset + p_hi > half:
+        lo, hi = center_hz - half - p_lo, center_hz + half - p_hi
         return f"{mode} at {frequency_hz} Hz does not fit the capture span; tune between {lo} and {hi} Hz"
     return None

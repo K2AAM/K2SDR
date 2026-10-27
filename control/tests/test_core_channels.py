@@ -52,7 +52,8 @@ async def test_open_needs_only_listen_and_no_lease_and_publishes_state():
     assert res.channel and res.channel_gen >= 1
     st = c.mirror["channels"][res.channel]
     assert st == {"receiver": RX, "owner": {"session": c.session.id, "job": None}, "frequency_hz": CENTER + 1500,
-                  "mode": "usb", "channel_gen": res.channel_gen, "decoder_taps": []}
+                  "mode": "usb", "channel_gen": res.channel_gen, "decoder_taps": [], "agc": "medium",
+                  "passband_hz": [300, 2700], "passband_default": True, "manual_gain_db": 0}
     assert worker(rt).channel_calls == [("open", int(res.channel[3:]), 1500)]   # offset from the centre, integer Hz
     assert rt.lease.holder is None
     await core.shutdown()
@@ -301,3 +302,74 @@ async def test_worker_restart_reopens_channels():
     op.drain()
     assert op.mirror["channels"][res.channel]["channel_gen"] >= 1
     await core.shutdown()
+
+
+# ------------------------------------------------------------------ listener controls (M1 UI)
+
+@async_test
+async def test_open_with_agc_passband_and_manual_gain_reaches_the_worker_and_the_state():
+    core, rt = await make()
+    c = Client(core, LISTENER)
+    await c.subscribe()
+    ack, res = await c.outcome(await c.send("channel.open", receiver=RX, frequency_hz=CENTER + 1000, mode="usb",
+                                            agc="off", passband_hz=[500, 2000], manual_gain_db=30))
+    assert res.status == "applied", (ack, res)
+    w = worker(rt).channels[int(res.channel[3:])]
+    assert (w.agc, w.pass_lo_hz, w.pass_hi_hz, w.manual_gain_cdb) == (wc.Agc.OFF, 500, 2000, 3000)
+    st = c.mirror["channels"][res.channel]
+    assert (st["agc"], st["passband_hz"], st["passband_default"], st["manual_gain_db"]) == ("off", [500, 2000],
+                                                                                        False, 30)
+    await core.shutdown()
+
+
+@async_test
+async def test_tune_controls_bump_generation_and_mode_change_drops_a_custom_passband():
+    core, rt = await make()
+    c = Client(core, LISTENER)
+    await c.subscribe()
+    first = await open_channel(c, CENTER + 1000, "usb")
+    _, r1 = await c.outcome(await c.send("channel.tune", channel=first.channel, passband_hz=[200, 3000]))
+    assert r1.status == "applied" and r1.channel_gen > first.channel_gen
+    _, r2 = await c.outcome(await c.send("channel.tune", channel=first.channel, agc="fast"))
+    st = c.mirror["channels"][first.channel]
+    assert (st["agc"], st["passband_hz"], r2.channel_gen > r1.channel_gen) == ("fast", [200, 3000], True)
+    _, r3 = await c.outcome(await c.send("channel.tune", channel=first.channel, mode="lsb"))
+    st = c.mirror["channels"][first.channel]
+    assert (st["mode"], st["passband_hz"], st["passband_default"], st["agc"]) == ("lsb", [-2700, -300], True, "fast")
+    _, r4 = await c.outcome(await c.send("channel.tune", channel=first.channel, passband_hz=[-2000, -500]))
+    _, r5 = await c.outcome(await c.send("channel.tune", channel=first.channel, passband_default=True))
+    assert c.mirror["channels"][first.channel]["passband_hz"] == [-2700, -300]
+    assert r5.status == "applied"
+    await core.shutdown()
+
+
+@async_test
+async def test_custom_passband_must_fit_the_capture_span():
+    core, _ = await make()
+    c = Client(core, LISTENER)
+    edge = CENTER + RATE // 2 - 3000          # default USB (300..2700) fits here, 300..4000 does not
+    await open_channel(c, edge, "usb")
+    ack, _ = await c.outcome(await c.send("channel.open", receiver=RX, frequency_hz=edge, mode="usb",
+                                          passband_hz=[300, 4000]))
+    assert ack.code is ErrorCode.E_OUT_OF_RANGE and "tune between" in ack.detail
+    await core.shutdown()
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("args", [
+    {"passband_hz": [2700, 300]}, {"passband_hz": [300, 300]}, {"passband_hz": [-200000, 0]},
+    {"agc": "turbo"}, {"manual_gain_db": 101}, {"passband_hz": [300.0, 2700]},
+])
+def test_open_control_arguments_are_validated(args):
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        m.ChannelOpenArgs(receiver=RX, frequency_hz=CENTER, mode="usb", **args)
+
+
+def test_tune_cannot_set_and_reset_the_passband_at_once():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        m.ChannelTuneArgs(channel="ch_1", passband_hz=[300, 2700], passband_default=True)
+    m.ChannelTuneArgs(channel="ch_1", passband_default=True)          # alone it is a change

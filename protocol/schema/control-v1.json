@@ -323,16 +323,53 @@
     "ChannelOpenArgs": {
       "additionalProperties": false,
       "properties": {
+        "agc": {
+          "default": "medium",
+          "enum": [
+            "off",
+            "fast",
+            "medium",
+            "slow"
+          ],
+          "title": "Agc",
+          "type": "string"
+        },
         "frequency_hz": {
           "maximum": 10000000000,
           "minimum": 0,
           "title": "Frequency Hz",
           "type": "integer"
         },
+        "manual_gain_db": {
+          "default": 0,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Manual Gain Db",
+          "type": "integer"
+        },
         "mode": {
           "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
           "title": "Mode",
           "type": "string"
+        },
+        "passband_hz": {
+          "anyOf": [
+            {
+              "items": {
+                "maximum": 100000,
+                "minimum": -100000,
+                "type": "integer"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Passband Hz"
         },
         "receiver": {
           "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
@@ -384,6 +421,17 @@
     "ChannelState": {
       "additionalProperties": false,
       "properties": {
+        "agc": {
+          "default": "medium",
+          "enum": [
+            "off",
+            "fast",
+            "medium",
+            "slow"
+          ],
+          "title": "Agc",
+          "type": "string"
+        },
         "channel_gen": {
           "maximum": 9007199254740991,
           "minimum": 0,
@@ -405,6 +453,13 @@
           "title": "Frequency Hz",
           "type": "integer"
         },
+        "manual_gain_db": {
+          "default": 0,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Manual Gain Db",
+          "type": "integer"
+        },
         "mode": {
           "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
           "title": "Mode",
@@ -412,6 +467,30 @@
         },
         "owner": {
           "$ref": "#/$defs/ChannelOwner"
+        },
+        "passband_default": {
+          "default": true,
+          "title": "Passband Default",
+          "type": "boolean"
+        },
+        "passband_hz": {
+          "anyOf": [
+            {
+              "items": {
+                "maximum": 100000,
+                "minimum": -100000,
+                "type": "integer"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Passband Hz"
         },
         "receiver": {
           "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
@@ -469,6 +548,24 @@
     "ChannelTuneArgs": {
       "additionalProperties": false,
       "properties": {
+        "agc": {
+          "anyOf": [
+            {
+              "enum": [
+                "off",
+                "fast",
+                "medium",
+                "slow"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agc"
+        },
         "channel": {
           "pattern": "^ch_[a-z0-9]{1,32}$",
           "title": "Channel",
@@ -502,6 +599,20 @@
           "default": null,
           "title": "If Channel Gen"
         },
+        "manual_gain_db": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Manual Gain Db"
+        },
         "mode": {
           "anyOf": [
             {
@@ -514,6 +625,30 @@
           ],
           "default": null,
           "title": "Mode"
+        },
+        "passband_default": {
+          "default": false,
+          "title": "Passband Default",
+          "type": "boolean"
+        },
+        "passband_hz": {
+          "anyOf": [
+            {
+              "items": {
+                "maximum": 100000,
+                "minimum": -100000,
+                "type": "integer"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Passband Hz"
         }
       },
       "required": [
