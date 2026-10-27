@@ -58,9 +58,15 @@ program, or not authorized".
 
 ## Open items
 
-1. **WWV 10 MHz hum.** To tell RF from our chain: listen to 10.000 MHz AM on OpenWebRX
-   (same antenna). If it hums there too, it is on the RF side (antenna, a local interferer
-   near 10 MHz, or the loop's power supply).
+1. **WWV 10 MHz hum: points to the RF side.** Adam listened on OpenWebRX right after the
+   window (same antenna, 12:57 local): "10 MHz WWV is very faint, 15 MHz is slightly better".
+   - **Our spectrum agrees:** the 10 MHz carrier was only about 7 dB above the noise median
+     (−66.5 vs −73.8 dBFS per 188 Hz bin).
+   - **Interpretation:** the AM channel's AGC brought a very weak carrier up to listening
+     level, and with it the band noise, whose 120 Hz-and-harmonics structure is typical of
+     power-line or switching-supply noise.
+   - **Not a defect claim either way:** re-check at a time when WWV 10 MHz is strong (Window 1
+     measured 48–51 dB SNR in the evening). If the hum persists then, look for a local source.
 2. **Worker CPU 19 %.** Measure the split (driver thread, ring/eventfd, DSP) before the service
    runs it around the clock.
 3. **The physical unplug with the worker,** in a later window (this run was the virtual
