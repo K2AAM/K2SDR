@@ -12,13 +12,20 @@ Rules implemented here (outline §4, §11, §13; acceptance A2, A3):
 - capture_gen is monotonic for the receiver's lifetime, including across
   worker restarts (the restarted worker starts at last_gen + 1).
 - Worker crashes are restarted with bounded retries and backoff; after that
-  the receiver stays `failed`, visibly.
+  the receiver stays `failed`, visibly. Live receivers (max_restarts=None) retry without limit,
+  backoff capped, so an Airspy unplugged and plugged back in (or released by another program)
+  comes back by itself; the retry is visible in `acquisition`.
+- Live receivers (M1, Airspy HF+): the hardware gain is serialized with retunes in the same
+  queue; a restarted worker opens with the last applied centre, rate and gain (the device keeps
+  whatever was set last, so the worker sets every control on open).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -49,16 +56,48 @@ _FORMAT_NAME = {1: "ci16", 2: "cf32", 3: "ri16", 4: "rf32"}
 _FIELD_TYPE = {"center_hz": m.FrequencyField, "sample_rate_hz": m.SampleRateField}
 
 
+# Sample rates the Airspy HF+ Discovery reported in Window 1 (firmware R5.0.1-CD, lib 1.6.8).
+AIRSPYHF_MEASURED_RATES_HZ = (912000, 768000, 650000, 456000, 384000, 228000, 192000)
+
+
+@dataclass(frozen=True)
+class AirspyhfSpec:
+    """A live Airspy HF+ receiver (M1). Ranges and rates are the admin's safe values (outline:
+    devices "set safe ranges and rates"); the worker re-checks against the device."""
+    serial: int
+    center_hz: int                            # initial centre
+    rate_hz: int                              # initial rate
+    freq_range_hz: tuple[int, int]            # safe tuning range for the centre
+    sample_rates_hz: tuple[int, ...] = AIRSPYHF_MEASURED_RATES_HZ
+    gain: m.HwGain = m.HwGain(hf_agc=True, hf_agc_threshold="low", hf_lna=True, hf_att=0)   # approved defaults
+
+    def __post_init__(self) -> None:
+        lo, hi = self.freq_range_hz
+        if not 0 < lo < hi <= 0xFFFFFFFF:
+            raise ValueError("freq_range_hz must be 0 < lo < hi <= 4294967295")
+        if not lo <= self.center_hz <= hi:
+            raise ValueError("center_hz outside freq_range_hz")
+        if not self.sample_rates_hz or set(self.sample_rates_hz) - set(AIRSPYHF_MEASURED_RATES_HZ):
+            raise ValueError(f"sample_rates_hz must be a subset of {AIRSPYHF_MEASURED_RATES_HZ}")
+        if self.rate_hz not in self.sample_rates_hz:
+            raise ValueError("rate_hz not in sample_rates_hz")
+        if not 0 < self.serial < 1 << 64:
+            raise ValueError("serial must be a non-zero u64")
+
+
 @dataclass
 class ReceiverConfig:
     receiver_id: str
     label: str
     receiver_idx: int
-    recording: Recording                      # M0: replay receivers only
+    recording: Recording | None = None        # replay receivers
+    airspyhf: AirspyhfSpec | None = None      # live Airspy HF+ receivers (M1); exactly one of the two
     takeover_policy: m.TakeoverPolicy = "deny"
     command_timeout: float = 5.0
-    max_restarts: int = 3
+    max_restarts: int | None = 3              # None: retry without limit (live receivers)
     restart_backoff: float = 0.5              # seconds, doubled per consecutive restart
+    restart_backoff_max: float = 30.0
+    healthy_after_s: float = 60.0             # a worker that ran this long resets the restart count
     paced: bool = True
     loop: bool = True
     frame_samples: int = 4096
@@ -88,6 +127,7 @@ class _Queued:
     rate_hz: int | None
     future: asyncio.Future = field(repr=False)
     authorize: Authorizer | None = field(default=None, repr=False)
+    gain: m.HwGain | None = None              # set: a SET_HW command (the full desired gain)
 
 
 LinkFactory = Callable[["ReceiverRuntime"], "object"]   # returns a WorkerLink bound to this runtime
@@ -96,8 +136,17 @@ LinkFactory = Callable[["ReceiverRuntime"], "object"]   # returns a WorkerLink b
 class ReceiverRuntime:
     def __init__(self, cfg: ReceiverConfig, store: StateStore, gate: GenerationGate,
                  link_factory: LinkFactory) -> None:
+        if (cfg.recording is None) == (cfg.airspyhf is None):
+            raise ValueError(f"{cfg.receiver_id}: exactly one of recording / airspyhf")
         self.cfg = cfg
         self.id = cfg.receiver_id
+        sp = cfg.airspyhf
+        # Live receivers: what a (re)started worker opens with; follows every applied readback.
+        self.live_center_hz: int | None = sp.center_hz if sp else None
+        self.live_rate_hz: int | None = sp.rate_hz if sp else None
+        self.live_gain: m.HwGain | None = sp.gain if sp else None
+        self._started_at: float | None = None
+        self._retry_in: float | None = None
         self.store = store
         self.gate = gate
         self.lease = Lease(cfg.receiver_id, cfg.takeover_policy)
@@ -118,6 +167,22 @@ class ReceiverRuntime:
 
     # ----------------------------------------------------------- state shape
     def initial_state(self) -> m.ReceiverState:
+        sp = self.cfg.airspyhf
+        if sp is not None:
+            return m.ReceiverState(
+                label=self.cfg.label, driver="airspyhf",
+                acquisition=m.Acquisition(state="stopped"),
+                lease=self.lease.to_model(),
+                capture_gen=0,
+                capture=m.Capture(
+                    center_hz=m.FrequencyField(),
+                    sample_rate_hz=m.SampleRateField(),
+                    antenna=m.FieldState[str](status="unsupported"),
+                    hw_gain=m.HwGainField(),
+                ),
+                capabilities=m.Capabilities(freq_range_hz=sp.freq_range_hz, sample_rates_hz=list(sp.sample_rates_hz),
+                                            antennas=[], sample_format="cf32"),
+            )
         rec = self.cfg.recording
         lo = hi = rec.freq_origin_hz
         return m.ReceiverState(
@@ -162,25 +227,38 @@ class ReceiverRuntime:
         try:
             await self._link.start(gen_start)
         except WorkerStartError as e:
-            detail = ("device locked by another process" if e.result is wc.Result.E_BUSY
-                      else f"worker failed to start (exit {e.exit_code})")
-            with self.store.txn() as t:
-                t.replace(*self._path("acquisition"), value=m.Acquisition(state="failed", detail=detail))
             self._link = None
+            state, detail = self._classify(e.result, e.exit_code)
+            self._publish_acquisition(state, detail)
             raise
-        rec = self.cfg.recording
         self.capture_gen = gen_start
+        self._started_at = time.monotonic()
         self.gate.set_capture_gen(self.id, gen_start)
         with self.store.txn() as t:
             t.replace(*self._path("acquisition"), value=m.Acquisition(state="running"))
             t.replace(*self._path("capture_gen"), value=gen_start)
-            # Replay parameters are facts from the recording, not a device readback.
-            t.replace(*self._path("capture", "center_hz"),
-                      value=m.FrequencyField(requested=rec.freq_origin_hz, applied=rec.freq_origin_hz,
-                                              status="applied", verified="none"))
-            t.replace(*self._path("capture", "sample_rate_hz"),
-                      value=m.SampleRateField(requested=rec.sample_rate_hz, applied=rec.sample_rate_hz,
-                                              status="applied", verified="none"))
+            if self.cfg.airspyhf is not None:
+                # What the worker set on open (no getters: "applied" means set and accepted).
+                for name, value in (("center_hz", self.live_center_hz), ("sample_rate_hz", self.live_rate_hz)):
+                    cur = t.get(*self._path("capture", name))
+                    t.replace(*self._path("capture", name), value=_FIELD_TYPE[name](
+                        requested=cur["requested"] if cur["status"] == "pending" else value, applied=value,
+                        status=cur["status"] if cur["status"] == "pending" else "applied",
+                        cmd=cur["cmd"], verified="none"))
+                cur = t.get(*self._path("capture", "hw_gain"))
+                t.replace(*self._path("capture", "hw_gain"), value=m.HwGainField(
+                    requested=cur["requested"] if cur["status"] == "pending" else self.live_gain,
+                    applied=self.live_gain, status=cur["status"] if cur["status"] == "pending" else "applied",
+                    cmd=cur["cmd"], verified="none"))
+            else:
+                rec = self.cfg.recording
+                # Replay parameters are facts from the recording, not a device readback.
+                t.replace(*self._path("capture", "center_hz"),
+                          value=m.FrequencyField(requested=rec.freq_origin_hz, applied=rec.freq_origin_hz,
+                                                  status="applied", verified="none"))
+                t.replace(*self._path("capture", "sample_rate_hz"),
+                          value=m.SampleRateField(requested=rec.sample_rate_hz, applied=rec.sample_rate_hz,
+                                                  status="applied", verified="none"))
         if self.on_capture_change is not None:
             self.on_capture_change(self, True)
 
@@ -211,22 +289,47 @@ class ReceiverRuntime:
     def on_late_applied(self, ap: wc.Applied) -> None:
         self._record_applied(ap, cmd_id=None)
 
+    def on_late_hw_applied(self, ap: wc.HwApplied) -> None:
+        self._record_hw_applied(ap, cmd_id=None)
+
+    # Worker exit codes (worker/src/worker.hpp) and start results -> acquisition state.
+    @staticmethod
+    def _classify(result: wc.Result | None, code: int | None) -> tuple[str, str]:
+        if result is wc.Result.E_BUSY or code == 75:
+            return "external_busy", "device in use by another process"
+        if code == 69 or result is wc.Result.E_DEVICE:
+            return "failed", "device not found or lost"
+        if code == 71:
+            return "failed", "device did not stop cleanly"
+        return "failed", f"worker exited with code {code}"
+
+    def _publish_acquisition(self, state: str, detail: str) -> None:
+        if self._retry_in is not None:
+            detail = f"{detail}; retrying in {self._retry_in:g} s"
+        with self.store.txn() as t:
+            t.replace(*self._path("acquisition"), value=m.Acquisition(state=state, detail=detail[:200]))
+
     def on_exit(self, code: int) -> None:
         if self._stopping:
             return
         self._link = None
-        with self.store.txn() as t:
-            t.replace(*self._path("acquisition"),
-                      value=m.Acquisition(state="failed", detail=f"worker exited with code {code}"))
-        if self._restarts < self.cfg.max_restarts:
-            delay = self.cfg.restart_backoff * (2 ** self._restarts)
+        if self._started_at is not None and time.monotonic() - self._started_at >= self.cfg.healthy_after_s:
+            self._restarts = 0                    # it had been working: a new incident, not a crash loop
+        self._started_at = None
+        self._retry_in = None
+        limit = self.cfg.max_restarts
+        if limit is None or self._restarts < limit:
+            delay = min(self.cfg.restart_backoff * (2 ** self._restarts), self.cfg.restart_backoff_max)
             self._restarts += 1
+            self._retry_in = delay
             self._restart_task = asyncio.get_running_loop().create_task(self._restart_after(delay))
+        self._publish_acquisition(*self._classify(None, code))
 
     async def _restart_after(self, delay: float) -> None:
         await asyncio.sleep(delay)
         if self._stopping:
             return
+        self._retry_in = None
         try:
             await self._start_worker()
         except Exception as e:  # noqa: BLE001 - state already shows failed; on_exit decides on retries
@@ -268,6 +371,18 @@ class ReceiverRuntime:
         self._queue.put_nowait(_Queued(cmd_id, center_hz, rate_hz, fut, authorize))
         return self.store.rev, fut
 
+    def submit_set_hw_gain(self, cmd_id: str, gain: m.HwGain,
+                           authorize: Authorizer | None = None) -> tuple[int, asyncio.Future]:
+        """Mark hw_gain pending with the full desired gain and queue it behind any retune."""
+        with self.store.txn() as t:
+            cur = t.get(*self._path("capture", "hw_gain"))
+            t.replace(*self._path("capture", "hw_gain"), value=m.HwGainField(
+                requested=gain, applied=cur["applied"], status="pending", cmd=cmd_id,
+                verified=cur["verified"] if cur["applied"] is not None else "none"))
+        fut = asyncio.get_running_loop().create_future()
+        self._queue.put_nowait(_Queued(cmd_id, None, None, fut, authorize, gain=gain))
+        return self.store.rev, fut
+
     async def _execute(self) -> None:
         while True:
             q = await self._queue.get()
@@ -289,7 +404,10 @@ class ReceiverRuntime:
             try:
                 if self._link is None:
                     raise WorkerGone("receiver is not running")
-                ap = await self._link.set_capture(q.center_hz, q.rate_hz, self.cfg.command_timeout)
+                if q.gain is not None:
+                    hw = await self._link.set_hw(_set_hw(q.gain), self.cfg.command_timeout)
+                else:
+                    ap = await self._link.set_capture(q.center_hz, q.rate_hz, self.cfg.command_timeout)
             except (WorkerRejected, WorkerFailed) as e:
                 outcome = self._record_failure(q, WORKER_RESULT_TO_CODE.get(e.result, ErrorCode.E_INTERNAL))
             except WorkerTimeout:
@@ -297,14 +415,37 @@ class ReceiverRuntime:
             except WorkerGone:
                 outcome = self._record_failure(q, ErrorCode.E_DEVICE_FAILED)
             else:
-                rev = self._record_applied(ap, cmd_id=q.cmd_id, fields=self._fields(q))
-                outcome = CommandOutcome("applied", rev, capture_gen=ap.capture_gen)
+                if q.gain is not None:
+                    rev = self._record_hw_applied(hw, cmd_id=q.cmd_id)
+                    outcome = CommandOutcome("applied", rev, capture_gen=hw.capture_gen)
+                else:
+                    rev = self._record_applied(ap, cmd_id=q.cmd_id, fields=self._fields(q))
+                    outcome = CommandOutcome("applied", rev, capture_gen=ap.capture_gen)
         if not q.future.done():
             q.future.set_result(outcome)
 
     @staticmethod
     def _fields(q: _Queued) -> list[str]:
+        if q.gain is not None:
+            return ["hw_gain"]
         return [n for n, v in (("center_hz", q.center_hz), ("sample_rate_hz", q.rate_hz)) if v is not None]
+
+    def _record_hw_applied(self, ap: wc.HwApplied, cmd_id: str | None) -> int:
+        """HW_APPLIED: what the worker set. Same ownership rules as the capture fields."""
+        gain = m.HwGain(hf_agc=ap.hf_agc, hf_agc_threshold="high" if ap.hf_agc_threshold_high else "low",
+                        hf_lna=ap.hf_lna, hf_att=ap.hf_att)
+        self.live_gain = gain
+        with self.store.txn() as t:
+            cur = t.get(*self._path("capture", "hw_gain"))
+            applied = json.loads(gain.model_dump_json())
+            if cmd_id is not None and cur["cmd"] == cmd_id:
+                new = dict(cur, applied=applied, status="applied", verified="none", error=None)
+            elif cur["applied"] != applied:
+                new = dict(cur, applied=applied)
+            else:
+                return self.store.rev
+            t.replace(*self._path("capture", "hw_gain"), value=new)
+        return self.store.rev
 
     def _record_applied(self, ap: wc.Applied, cmd_id: str | None, fields: list[str] | None = None) -> int:
         """Apply a worker readback. Three cases per field:
@@ -319,6 +460,8 @@ class ReceiverRuntime:
         if ap.capture_gen < self.capture_gen:
             raise RuntimeError(f"{self.id}: worker reported capture_gen {ap.capture_gen} < {self.capture_gen}")
         self.capture_gen = ap.capture_gen
+        if self.cfg.airspyhf is not None:          # a restarted worker opens where the device was
+            self.live_center_hz, self.live_rate_hz = ap.center_hz, ap.sample_rate_hz
         self.gate.set_capture_gen(self.id, ap.capture_gen)
         verified = "driver_readback" if ap.verified == 1 else "none"
         readback = {"center_hz": ap.center_hz, "sample_rate_hz": ap.sample_rate_hz}
@@ -344,10 +487,51 @@ class ReceiverRuntime:
                 cur = t.get(*self._path("capture", name))
                 if cur["cmd"] != q.cmd_id:
                     continue        # a later command already owns this field
+                if name == "hw_gain":
+                    t.replace(*self._path("capture", name), value=dict(cur, status="failed", error=code))
+                    continue
                 t.replace(*self._path("capture", name), value=_FIELD_TYPE[name](
                     requested=cur["requested"], applied=cur["applied"], status="failed", cmd=q.cmd_id,
                     verified=cur["verified"] if cur["applied"] is not None else "none", error=code))
         return CommandOutcome("failed", self.store.rev, code=code, detail=detail)
+
+
+def _set_hw(g: m.HwGain) -> wc.SetHw:
+    """Every control, every time (the worker sets all four anyway)."""
+    return wc.SetHw(hf_agc=g.hf_agc, hf_agc_threshold_high=g.hf_agc_threshold == "high", hf_lna=g.hf_lna,
+                    hf_att=g.hf_att)
+
+
+def airspyhf_device_id(serial: int) -> str:
+    """Lock name: one physical Airspy HF+ per serial, whichever receiver config names it."""
+    return f"airspyhf-{serial:016x}"
+
+
+def airspyhf_link_factory(worker_bin: Path, lock_dir: Path) -> LinkFactory:
+    """Real worker processes for live Airspy HF+ receivers (M1). Each (re)start opens with the
+    receiver's current centre, rate and gain, not the configured initial ones."""
+    from ..devices.worker_client import Callbacks, WorkerProcess
+    from ..replay.worker_argv import HwGain, WorkerIdentity, airspyhf_argv
+
+    def factory(rt: ReceiverRuntime):
+        sp = rt.cfg.airspyhf
+        ident = WorkerIdentity(device_id=airspyhf_device_id(sp.serial), lock_dir=lock_dir,
+                               receiver_idx=rt.cfg.receiver_idx)
+
+        def argv(ctl_fd: int, data_fd: int, gen_start: int) -> list[str]:
+            g = rt.live_gain
+            return airspyhf_argv(worker_bin, ident, serial=sp.serial, rate_hz=rt.live_rate_hz,
+                                 center_hz=rt.live_center_hz, ctl_fd=ctl_fd, data_fd=data_fd,
+                                 gain=HwGain(g.hf_agc, g.hf_agc_threshold == "high", g.hf_lna, g.hf_att),
+                                 frame_samples=rt.cfg.frame_samples, capture_gen_start=gen_start,
+                                 iq_frames=rt.cfg.iq_frames, spectrum_fft=rt.cfg.spectrum_fft,
+                                 spectrum_fps=rt.cfg.spectrum_fps)
+
+        return WorkerProcess(argv, Callbacks(on_frame=rt.on_frame, on_status=rt.on_status,
+                                             on_late_applied=rt.on_late_applied,
+                                             on_late_hw_applied=rt.on_late_hw_applied, on_exit=rt.on_exit))
+
+    return factory
 
 
 def replay_link_factory(worker_bin: Path, lock_dir: Path) -> LinkFactory:

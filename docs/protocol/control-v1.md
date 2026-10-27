@@ -138,6 +138,36 @@ offset from the applied capture centre for the worker.
 - **Audio** of a channel goes to its owner only, as binary stream v1 messages on the same socket
   (`docs/protocol/stream-v1.md`).
 
+## Hardware gain (M1, Airspy HF+)
+
+`receiver.set_hw_gain {receiver, hf_agc?, hf_agc_threshold? ("low"|"high"), hf_lna?, hf_att? (0..8)}`
+
+- **Rules:** the gain is global device state, like the capture, so it needs the lease and
+  `hw.retune` (the outline has no separate gain permission). It runs in the receiver's
+  serialized queue, in order with retunes.
+- **Partial changes compose:** each command starts from the newest wish (a pending request,
+  else the applied value), so two queued changes do not undo each other. The worker always
+  sets all four controls.
+- **State:** `capture.hw_gain` (`FieldState` of `{hf_agc, hf_agc_threshold, hf_lna, hf_att}`)
+  follows the same pending → applied/failed rules as the capture fields. `verified` stays
+  `"none"`: libairspyhf has no getters.
+- **Generations:** a gain change does not start a new generation.
+- **Refusals:** replay receivers answer `E_UNSUPPORTED`. A driver error gives a failed result
+  (`E_DEVICE_FAILED`), and the worker restarts.
+
+## Live receivers: loss and restart (M1)
+
+`driver = "airspyhf"` receivers restart their worker without limit. The backoff is 0.5 s
+doubling to 30 s, and resets after a worker ran for 60 s.
+
+- **While waiting,** `acquisition` shows the reason and the retry: `failed` "device not found
+  or lost; retrying in N s", or `external_busy` "device in use by another process; …" when
+  another program (OpenWebRX+) holds it.
+- **A restarted worker** opens with the last applied centre, rate and gain (not the configured
+  initial ones), so the receiver comes back where it was. Channels are reopened (new
+  `channel_gen`).
+- **Replay receivers** keep the M0 policy: at most 3 restarts.
+
 ## Spectrum stream (M1)
 
 `stream.spectrum {receiver, enabled}` needs `listen` and gives an immediate result. While

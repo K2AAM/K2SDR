@@ -109,6 +109,21 @@ class ReceiverSetAntennaArgs(Strict):
     if_capture_gen: Gen | None = None
 
 
+class ReceiverSetHwGainArgs(Strict):
+    """Airspy HF+ hardware gain (M1). Only the given controls change; at least one."""
+    receiver: ReceiverId
+    hf_agc: bool | None = None
+    hf_agc_threshold: Literal["low", "high"] | None = None    # acts with hf_agc on
+    hf_lna: bool | None = None
+    hf_att: Annotated[int, Field(strict=True, ge=0, le=8)] | None = None   # acts with hf_agc off
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> "ReceiverSetHwGainArgs":
+        if (self.hf_agc, self.hf_agc_threshold, self.hf_lna, self.hf_att) == (None, None, None, None):
+            raise ValueError("receiver.set_hw_gain must change at least one control")
+        return self
+
+
 class ChannelOpenArgs(Strict):
     receiver: ReceiverId
     frequency_hz: Hz        # absolute dial frequency; must lie within the current capture span
@@ -173,6 +188,11 @@ class ReceiverSetAntenna(_Cmd):
     args: ReceiverSetAntennaArgs
 
 
+class ReceiverSetHwGain(_Cmd):
+    op: Literal["receiver.set_hw_gain"]
+    args: ReceiverSetHwGainArgs
+
+
 class ChannelOpen(_Cmd):
     op: Literal["channel.open"]
     args: ChannelOpenArgs
@@ -196,7 +216,7 @@ class StreamSpectrum(_Cmd):
 ClientMessage = Annotated[
     Union[
         SessionHello, StateSubscribe, ReceiverClaim, ReceiverRelease,
-        ReceiverSetCapture, ReceiverSetAntenna, ChannelOpen, ChannelTune, ChannelClose, StreamSpectrum,
+        ReceiverSetCapture, ReceiverSetAntenna, ReceiverSetHwGain, ChannelOpen, ChannelTune, ChannelClose, StreamSpectrum,
     ],
     Field(discriminator="op"),
 ]
@@ -210,6 +230,7 @@ OP_PERMISSION: dict[str, str | None] = {
     "receiver.release": "hw.retune",
     "receiver.set_capture": "hw.retune",
     "receiver.set_antenna": "hw.antenna",
+    "receiver.set_hw_gain": "hw.retune",   # global device state like the capture: lease + hw.retune
     "channel.open": "listen",
     "channel.tune": "listen",
     "channel.close": "listen",
@@ -262,6 +283,19 @@ class SampleRateField(FieldState[int]):
     applied: SampleRateHz | None = None
 
 
+class HwGain(Strict):
+    """Airspy HF+ gain controls as set in the device (no getters exist: verified stays "none")."""
+    hf_agc: bool
+    hf_agc_threshold: Literal["low", "high"]
+    hf_lna: bool
+    hf_att: Annotated[int, Field(strict=True, ge=0, le=8)]
+
+
+class HwGainField(FieldState[HwGain]):
+    requested: HwGain | None = None
+    applied: HwGain | None = None
+
+
 class AntennaPort(Strict):
     id: PortId
     label: Annotated[str, Field(max_length=64)]   # custom label, e.g. "C — HF"
@@ -304,6 +338,7 @@ class Capture(Strict):
     center_hz: FrequencyField
     sample_rate_hz: SampleRateField
     antenna: FieldState[str]
+    hw_gain: HwGainField = HwGainField(status="unsupported")   # supported by airspyhf receivers
 
 
 class ReceiverState(Strict):

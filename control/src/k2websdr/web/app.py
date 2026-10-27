@@ -31,8 +31,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..auth import accounts as acc
 from ..auth.net import ProxyPolicy, SlidingWindow, TokenBucket
-from ..config import Config
-from ..core.receiver import ReceiverConfig, replay_link_factory
+from ..config import Config, airspyhf_spec
+from ..core.receiver import ReceiverConfig, airspyhf_link_factory, replay_link_factory
 from ..core.service import ControlCore, Principal, Session
 from ..db.migrate import connect, migrate
 from ..ledger.load import availability, load_ledger, summary
@@ -82,14 +82,18 @@ def create_app(cfg: Config, *, link_factory=None) -> FastAPI:
         st.ledger = load_ledger(cfg.ledger)
         st.core = ControlCore(build=cfg.build, exposure=cfg.exposure, ledger=summary(st.ledger))
         cfg.lock_dir.mkdir(parents=True, exist_ok=True)
-        factory = link_factory or replay_link_factory(cfg.worker_bin, cfg.lock_dir)
+        replay_factory = link_factory or replay_link_factory(cfg.worker_bin, cfg.lock_dir)
+        live_factory = link_factory or airspyhf_link_factory(cfg.worker_bin, cfg.lock_dir)
         for i, r in enumerate(cfg.receivers):
-            rec = sigmf.load(r.recording)
             # Listening needs no raw IQ in the service; the worker sends spectrum rows and audio.
-            st.core.add_receiver(ReceiverConfig(receiver_id=r.id, label=r.label, receiver_idx=i, recording=rec,
-                                                takeover_policy=r.takeover_policy, iq_frames=False,
-                                                spectrum_fft=cfg.spectrum_fft, spectrum_fps=cfg.spectrum_fps),
-                                 factory)
+            common = dict(receiver_id=r.id, label=r.label, receiver_idx=i, takeover_policy=r.takeover_policy,
+                          iq_frames=False, spectrum_fft=cfg.spectrum_fft, spectrum_fps=cfg.spectrum_fps)
+            if r.airspyhf is not None:
+                # Live: keep retrying (unplug, or another program holding the device) with capped backoff.
+                st.core.add_receiver(ReceiverConfig(**common, airspyhf=airspyhf_spec(r.airspyhf), max_restarts=None),
+                                     live_factory)
+            else:
+                st.core.add_receiver(ReceiverConfig(**common, recording=sigmf.load(r.recording)), replay_factory)
         for rt in st.core.receivers.values():
             try:
                 await rt.start()

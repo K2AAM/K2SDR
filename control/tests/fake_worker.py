@@ -46,8 +46,15 @@ class FakeWorker:
         self.active = 0
         self.max_active = 0
         self.gen = 0
-        self.center = runtime.cfg.recording.freq_origin_hz
-        self.rate = runtime.cfg.recording.sample_rate_hz
+        if runtime.cfg.airspyhf is not None:          # opens where the runtime says (restart: last applied)
+            self.center, self.rate = runtime.live_center_hz, runtime.live_rate_hz
+            g = runtime.live_gain
+            self.opened_with = (self.center, self.rate, g)
+            self.hw = wc.HwApplied(0, g.hf_agc, g.hf_agc_threshold == "high", g.hf_lna, g.hf_att, 0)
+        else:
+            self.center = runtime.cfg.recording.freq_origin_hz
+            self.rate = runtime.cfg.recording.sample_rate_hz
+        self.hw_calls: list[wc.SetHw] = []
         self.alive = False
         FakeWorker.instances.append(self)
 
@@ -88,6 +95,31 @@ class FakeWorker:
             return wc.Applied(capture_gen=self.gen, center_hz=center, sample_rate_hz=rate, verified=1)
         finally:
             self.active -= 1
+
+    async def set_hw(self, hw: wc.SetHw, timeout: float = 5.0) -> wc.HwApplied:
+        if not self.alive:
+            raise WorkerGone("not running")
+        if self.rt.cfg.airspyhf is None:
+            raise WorkerRejected(wc.Result.E_UNSUPPORTED)
+        self.hw_calls.append(hw)
+        self.calls.append(("hw", None))
+        step = self.script.popleft() if self.script else ("apply",)
+        if self.gate is not None:
+            await self.gate.wait()
+        if step[0] == "fail":
+            raise WorkerFailed(step[1])
+        if step[0] == "hang":
+            await asyncio.sleep(timeout)
+            raise WorkerTimeout("fake hang")
+        if step[0] == "crash":
+            self.alive = False
+            self.rt.on_exit(step[1])
+            raise WorkerGone("fake crash")
+        h = self.hw
+        self.hw = wc.HwApplied(self.gen, *(old if new is None else new for old, new in (
+            (h.hf_agc, hw.hf_agc), (h.hf_agc_threshold_high, hw.hf_agc_threshold_high), (h.hf_lna, hw.hf_lna),
+            (h.hf_att, hw.hf_att))), 0)
+        return self.hw
 
     # ---------------------------------------------------------------- channels
     def _bump(self) -> int:

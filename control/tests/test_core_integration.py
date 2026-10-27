@@ -138,7 +138,8 @@ async def test_second_core_on_same_device_reports_lock_busy(tmp_path):
     c = Client(core_b)
     await c.subscribe()
     acq = c.mirror["receivers"][RX]["acquisition"]
-    assert (acq["state"], acq["detail"]) == ("failed", "device locked by another process")
+    # Someone else owns the device: external_busy (design note §2), with the retry shown.
+    assert acq["state"] == "external_busy" and acq["detail"].startswith("device in use by another process")
     # The first core is unaffected and still accepts commands.
     a = Client(core_a, OPERATOR)
     await a.outcome(await a.send("receiver.claim", receiver=RX))

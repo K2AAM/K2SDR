@@ -21,11 +21,26 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
+class AirspyhfEntry:
+    """[[receivers]] driver = "airspyhf" (M1). All frequencies integer Hz."""
+    serial: int                          # e.g. serial = "A1B2C3D4E5F60718" (hex, as airspyhf_info prints it)
+    center_hz: int
+    rate_hz: int
+    freq_range_hz: tuple[int, int]       # the admin's safe tuning range for the centre
+    sample_rates_hz: tuple[int, ...] | None = None   # default: every rate the device reported (Window 1)
+    hf_agc: bool = True                  # approved starting values (Adam, 2026-10-26)
+    hf_agc_threshold: str = "low"
+    hf_lna: bool = True
+    hf_att: int = 0
+
+
+@dataclass(frozen=True)
 class ReceiverEntry:
     id: str
     label: str
-    recording: Path                      # .sigmf-meta (M0: replay receivers only)
+    recording: Path | None = None        # replay receivers: .sigmf-meta
     takeover_policy: m.TakeoverPolicy = "deny"
+    airspyhf: AirspyhfEntry | None = None   # live receivers (M1)
 
 
 @dataclass(frozen=True)
@@ -102,6 +117,17 @@ def validate(cfg: Config) -> Config:
     ids = [r.id for r in cfg.receivers]
     if len(ids) != len(set(ids)):
         raise ConfigError("duplicate receiver ids")
+    serials = [r.airspyhf.serial for r in cfg.receivers if r.airspyhf]
+    if len(serials) != len(set(serials)):
+        raise ConfigError("two receivers name the same Airspy HF+ serial")
+    for r in cfg.receivers:
+        if (r.recording is None) == (r.airspyhf is None):
+            raise ConfigError(f"receiver {r.id}: give either recording (replay) or driver = \"airspyhf\"")
+        if r.airspyhf is not None:
+            try:
+                airspyhf_spec(r.airspyhf)
+            except ValueError as e:
+                raise ConfigError(f"receiver {r.id}: {e}") from None
     return cfg
 
 
@@ -131,11 +157,59 @@ def load(path: str | Path) -> Config:
             srv[key] = tuple(srv[key])
     recs = []
     for r in raw.get("receivers", []):
-        rp = Path(r["recording"])
-        recs.append(ReceiverEntry(id=r["id"], label=r.get("label", r["id"]),
-                                  recording=rp if rp.is_absolute() else (base / rp).resolve(),
-                                  takeover_policy=r.get("takeover_policy", "deny")))
+        driver = r.get("driver", "replay")
+        common = dict(id=r["id"], label=r.get("label", r["id"]), takeover_policy=r.get("takeover_policy", "deny"))
+        if driver == "replay":
+            unknown_r = set(r) - {"id", "label", "takeover_policy", "driver", "recording"}
+            if unknown_r:
+                raise ConfigError(f"receiver {r['id']}: unknown keys {sorted(unknown_r)}")
+            rp = Path(r["recording"])
+            recs.append(ReceiverEntry(**common, recording=rp if rp.is_absolute() else (base / rp).resolve()))
+        elif driver == "airspyhf":
+            allowed = {"id", "label", "takeover_policy", "driver", "serial", "center_hz", "rate_hz", "freq_range_hz",
+                       "sample_rates_hz", "hf_agc", "hf_agc_threshold", "hf_lna", "hf_att"}
+            unknown_r = set(r) - allowed
+            if unknown_r:
+                raise ConfigError(f"receiver {r['id']}: unknown keys {sorted(unknown_r)}")
+            try:
+                serial = int(str(r["serial"]).removeprefix("0x").removeprefix("0X"), 16)
+                rng = tuple(r["freq_range_hz"])
+                for v in (r["center_hz"], r["rate_hz"], *rng, *r.get("sample_rates_hz", ())):
+                    if not isinstance(v, int) or isinstance(v, bool):
+                        raise ConfigError(f"receiver {r['id']}: frequencies and rates are integer Hz")
+                entry = AirspyhfEntry(
+                    serial=serial, center_hz=r["center_hz"], rate_hz=r["rate_hz"], freq_range_hz=rng,
+                    sample_rates_hz=tuple(r["sample_rates_hz"]) if "sample_rates_hz" in r else None,
+                    hf_agc=r.get("hf_agc", True), hf_agc_threshold=r.get("hf_agc_threshold", "low"),
+                    hf_lna=r.get("hf_lna", True), hf_att=r.get("hf_att", 0))
+            except ConfigError:
+                raise
+            except KeyError as e:
+                raise ConfigError(f"receiver {r['id']}: missing {e.args[0]}") from None
+            except (TypeError, ValueError) as e:
+                raise ConfigError(f"receiver {r['id']}: {e}") from None
+            recs.append(ReceiverEntry(**common, airspyhf=entry))
+        else:
+            raise ConfigError(f"receiver {r['id']}: unknown driver {driver!r}")
     extra = set(raw) - {"server", "receivers"}
     if extra:
         raise ConfigError(f"unknown top-level tables: {sorted(extra)}")
     return validate(with_defaults(Config(**srv, receivers=tuple(recs))))
+
+
+def airspyhf_spec(e: AirspyhfEntry):
+    """The runtime spec for a config entry (raises ValueError with the reason)."""
+    from .core.receiver import AIRSPYHF_MEASURED_RATES_HZ, AirspyhfSpec
+    if not isinstance(e.hf_agc, bool) or not isinstance(e.hf_lna, bool):
+        raise ValueError("hf_agc and hf_lna are true/false")
+    if e.hf_agc_threshold not in ("low", "high"):
+        raise ValueError("hf_agc_threshold is \"low\" or \"high\"")
+    if not isinstance(e.hf_att, int) or isinstance(e.hf_att, bool) or not 0 <= e.hf_att <= 8:
+        raise ValueError("hf_att is 0..8")
+    if len(e.freq_range_hz) != 2:
+        raise ValueError("freq_range_hz is [low, high]")
+    return AirspyhfSpec(serial=e.serial, center_hz=e.center_hz, rate_hz=e.rate_hz,
+                        freq_range_hz=(e.freq_range_hz[0], e.freq_range_hz[1]),
+                        sample_rates_hz=e.sample_rates_hz or AIRSPYHF_MEASURED_RATES_HZ,
+                        gain=m.HwGain(hf_agc=e.hf_agc, hf_agc_threshold=e.hf_agc_threshold, hf_lna=e.hf_lna,
+                                      hf_att=e.hf_att))

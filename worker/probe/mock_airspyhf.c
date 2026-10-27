@@ -15,6 +15,8 @@
  * Like libairspyhf 1.6.8, transfer.dropped_samples is the loss immediately before
  * that block (per callback), not a running total.
  *   MOCK_UNPLUG_AT_S=<s>       stop streaming at this time (is_streaming -> 0)
+ *   MOCK_UNPLUG_ONCE_FILE=<p>  ... only if <p> does not exist yet, and create it (one unplug across
+ *                              worker restarts: the replugged device then keeps streaming)
  *   MOCK_RETUNE_LOSS=<n>       each set_freq while streaming silently skips n samples
  *                              (time advances, nothing delivered, nothing reported)
  *   MOCK_STOP_HANG=1           after an unplug, airspyhf_stop/close never return (as measured
@@ -217,6 +219,8 @@ static void* stream_thread(void* arg) {
     double tone1 = env_d("MOCK_TONE_HZ", 10005000), tone2 = env_d("MOCK_TONE2_HZ", 15005000);
     double drop_at = env_d("MOCK_DROP_AT_S", -1), unplug_at = env_d("MOCK_UNPLUG_AT_S", -1);
     double stall_at = env_d("MOCK_STALL_AT_S", -1);
+    const char* once = getenv("MOCK_UNPLUG_ONCE_FILE");
+    if (once && unplug_at > 0 && access(once, F_OK) == 0) unplug_at = -1;   /* already happened */
     uint64_t drops[32];
     int ndrops = 0, next_drop = 0;
     const char* pat = getenv("MOCK_DROP_PATTERN");
@@ -243,7 +247,12 @@ static void* stream_thread(void* arg) {
         double t = (double)n / d->rate;
         double wait = t0 + t + (double)BLOCK / d->rate - now_s();
         if (wait > 0) usleep((useconds_t)(wait * 1e6));
-        if (unplug_at > 0 && t >= unplug_at) { g_unplugged = 1; d->streaming = 0; break; }
+        if (unplug_at > 0 && t >= unplug_at) {
+            if (once) { FILE* f = fopen(once, "w"); if (f) fclose(f); }
+            g_unplugged = 1;
+            d->streaming = 0;
+            break;
+        }
         if (stall_at > 0 && t >= stall_at) { while (d->streaming) usleep(10000); break; }
         uint64_t lost = 0;
         if (drop_at > 0 && t >= drop_at && next_drop < ndrops) { lost = drops[next_drop++]; n += lost; }
