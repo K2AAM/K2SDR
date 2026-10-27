@@ -668,6 +668,8 @@
           "receiver.set_antenna": "#/$defs/ReceiverSetAntenna",
           "receiver.set_capture": "#/$defs/ReceiverSetCapture",
           "receiver.set_hw_gain": "#/$defs/ReceiverSetHwGain",
+          "recording.start": "#/$defs/RecordingStart",
+          "recording.stop": "#/$defs/RecordingStop",
           "session.hello": "#/$defs/SessionHello",
           "state.subscribe": "#/$defs/StateSubscribe",
           "stream.spectrum": "#/$defs/StreamSpectrum"
@@ -707,6 +709,12 @@
         },
         {
           "$ref": "#/$defs/StreamSpectrum"
+        },
+        {
+          "$ref": "#/$defs/RecordingStart"
+        },
+        {
+          "$ref": "#/$defs/RecordingStop"
         }
       ]
     },
@@ -735,6 +743,8 @@
         "E_TIMEOUT",
         "E_STALE_PRECONDITION",
         "E_RATE_LIMITED",
+        "E_STORAGE_FULL",
+        "E_UNKNOWN_RECORDING",
         "E_INTERNAL"
       ],
       "title": "ErrorCode",
@@ -1737,6 +1747,232 @@
       "title": "ReceiverState",
       "type": "object"
     },
+    "RecordingStart": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/RecordingStartArgs"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "recording.start",
+          "title": "Op",
+          "type": "string"
+        },
+        "type": {
+          "const": "cmd",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "op",
+        "args"
+      ],
+      "title": "RecordingStart",
+      "type": "object"
+    },
+    "RecordingStartArgs": {
+      "additionalProperties": false,
+      "description": "Record clean demodulated audio (design §3.6) on a server-owned channel: it keeps recording\nwhen the browser is suspended or closed, until stopped or storage runs out.",
+      "properties": {
+        "agc": {
+          "default": "medium",
+          "enum": [
+            "off",
+            "fast",
+            "medium",
+            "slow"
+          ],
+          "title": "Agc",
+          "type": "string"
+        },
+        "frequency_hz": {
+          "maximum": 10000000000,
+          "minimum": 0,
+          "title": "Frequency Hz",
+          "type": "integer"
+        },
+        "manual_gain_db": {
+          "default": 0,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Manual Gain Db",
+          "type": "integer"
+        },
+        "mode": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
+          "title": "Mode",
+          "type": "string"
+        },
+        "passband_hz": {
+          "anyOf": [
+            {
+              "items": {
+                "maximum": 100000,
+                "minimum": -100000,
+                "type": "integer"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Passband Hz"
+        },
+        "receiver": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "title": "Receiver",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiver",
+        "frequency_hz",
+        "mode"
+      ],
+      "title": "RecordingStartArgs",
+      "type": "object"
+    },
+    "RecordingState": {
+      "additionalProperties": false,
+      "description": "An active recording (finished ones are listed over HTTP: /api/recordings).",
+      "properties": {
+        "bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "channel": {
+          "pattern": "^ch_[a-z0-9]{1,32}$",
+          "title": "Channel",
+          "type": "string"
+        },
+        "file": {
+          "maxLength": 128,
+          "title": "File",
+          "type": "string"
+        },
+        "frequency_hz": {
+          "maximum": 10000000000,
+          "minimum": 0,
+          "title": "Frequency Hz",
+          "type": "integer"
+        },
+        "gaps": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Gaps",
+          "type": "integer"
+        },
+        "mode": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
+          "title": "Mode",
+          "type": "string"
+        },
+        "owner": {
+          "maxLength": 128,
+          "title": "Owner",
+          "type": "string"
+        },
+        "receiver": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "title": "Receiver",
+          "type": "string"
+        },
+        "seconds": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Seconds",
+          "type": "number"
+        },
+        "started_utc": {
+          "maxLength": 40,
+          "title": "Started Utc",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiver",
+        "channel",
+        "owner",
+        "frequency_hz",
+        "mode",
+        "started_utc",
+        "file"
+      ],
+      "title": "RecordingState",
+      "type": "object"
+    },
+    "RecordingStop": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/RecordingStopArgs"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "recording.stop",
+          "title": "Op",
+          "type": "string"
+        },
+        "type": {
+          "const": "cmd",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "op",
+        "args"
+      ],
+      "title": "RecordingStop",
+      "type": "object"
+    },
+    "RecordingStopArgs": {
+      "additionalProperties": false,
+      "properties": {
+        "recording": {
+          "pattern": "^rec_[a-z0-9]{1,32}$",
+          "title": "Recording",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording"
+      ],
+      "title": "RecordingStopArgs",
+      "type": "object"
+    },
     "Result": {
       "additionalProperties": false,
       "properties": {
@@ -1809,6 +2045,19 @@
           "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
           "title": "Id",
           "type": "string"
+        },
+        "recording": {
+          "anyOf": [
+            {
+              "pattern": "^rec_[a-z0-9]{1,32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recording"
         },
         "rev": {
           "maximum": 9007199254740991,
@@ -2023,8 +2272,28 @@
           "title": "Receivers",
           "type": "object"
         },
+        "recordings": {
+          "default": {},
+          "patternProperties": {
+            "^rec_[a-z0-9]{1,32}$": {
+              "$ref": "#/$defs/RecordingState"
+            }
+          },
+          "title": "Recordings",
+          "type": "object"
+        },
         "server": {
           "$ref": "#/$defs/ServerInfo"
+        },
+        "storage": {
+          "$ref": "#/$defs/StorageState",
+          "default": {
+            "cap_bytes": 0,
+            "detail": null,
+            "free_bytes": 0,
+            "full": false,
+            "used_bytes": 0
+          }
         }
       },
       "required": [
@@ -2153,6 +2422,50 @@
         "args"
       ],
       "title": "StateSubscribe",
+      "type": "object"
+    },
+    "StorageState": {
+      "additionalProperties": false,
+      "description": "Recording storage, visible to everyone who can record (B9: disk-full visible).",
+      "properties": {
+        "cap_bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cap Bytes",
+          "type": "integer"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "free_bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Free Bytes",
+          "type": "integer"
+        },
+        "full": {
+          "default": false,
+          "title": "Full",
+          "type": "boolean"
+        },
+        "used_bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Used Bytes",
+          "type": "integer"
+        }
+      },
+      "title": "StorageState",
       "type": "object"
     },
     "StreamSpectrum": {

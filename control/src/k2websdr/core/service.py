@@ -30,6 +30,7 @@ from ..protocol import worker_ctl as wc
 from ..protocol.frame import FrameFlags, FrameHeader, FrameKind
 from .lease import Holder, LeaseError
 from .modes import WORKER_MODES, receiver_mode_problem, span_problem
+from .recording import RecordingCatalog, WavWriter, file_name
 from .receiver import WORKER_RESULT_TO_CODE, ReceiverConfig, ReceiverRuntime
 from .store import StateStore
 
@@ -44,6 +45,8 @@ MAX_CHANNEL_CMDS_PER_SESSION = 8   # channel commands of one session waiting for
 _AGC = {"off": wc.Agc.OFF, "fast": wc.Agc.FAST, "medium": wc.Agc.MEDIUM, "slow": wc.Agc.SLOW}
 # Browser stream v1 (see docs/protocol/stream-v1.md, "Backpressure"):
 STREAM_AUDIO_QUEUE_BYTES = 96_000  # pending audio per session (~1 s for 4 channels at 24 kB/s)
+MAX_RECORDINGS_PER_PRINCIPAL = 4
+RECORDING_STATE_INTERVAL_S = 1.0   # progress and storage checks while recording
 
 
 @dataclass(frozen=True)
@@ -169,9 +172,24 @@ class _Channel:
     open: bool = False                # worker has applied it
     closing: bool = False
     agc: str = "medium"
+    job: str | None = None                    # server-owned channel (a recording): no session
     passband: tuple[int, int] | None = None   # requested; None: the mode's default
     manual_gain_db: int = 0
     applied_passband: tuple[int, int] | None = None
+
+
+@dataclass
+class _Recording:
+    id: str
+    owner: str
+    channel: _Channel
+    writer: WavWriter
+    started_utc: str
+    file: str
+    samples: int = 0
+    gaps: int = 0
+    last_update: float = 0.0
+    started_audio: bool = False
 
 
 class Rejected(Exception):
@@ -191,7 +209,8 @@ class CapacityRejected(Rejected):
 class ControlCore:
     def __init__(self, *, build: str = "dev", exposure: str = "loopback",
                  ledger: m.LedgerSummary | None = None, cmd_capacity: int | None = None,
-                 in_flight_capacity: int | None = None, receiver_queue_limit: int | None = None) -> None:
+                 in_flight_capacity: int | None = None, receiver_queue_limit: int | None = None,
+                 recordings: RecordingCatalog | None = None) -> None:
         self.cmd_capacity = cmd_capacity or MAX_CMD_RECORDS
         # In-flight records are never evicted, so they must always leave room for at least one
         # finished record; then evicting finished records alone keeps the total bound.
@@ -216,6 +235,13 @@ class ControlCore:
         self._channel_cmds: dict[str, int] = {}          # session id -> channel commands in flight
         self._reconcile_locks: dict[str, asyncio.Lock] = {}
         self._spectrum_subs: dict[str, set[str]] = {}    # receiver id -> session ids (stream.spectrum)
+        self.recordings = recordings
+        self._recs: dict[str, _Recording] = {}
+        self._rec_by_channel: dict[str, _Recording] = {}
+        self._rec_ids = itertools.count(1)
+        if recordings is not None:
+            recordings.mark_unfinished_interrupted()
+            self._publish_storage()
         self.stream_stale = Counter()                    # frames the server refused as stale/unowned
         self.decoder_sink: list[DecoderEvent] = []
         self.store.subscribe(self._broadcast)
@@ -238,6 +264,8 @@ class ControlCore:
             await rt.start()
 
     async def shutdown(self) -> None:
+        for rec in list(self._recs.values()):
+            self._finish_recording(rec, "interrupted", "service stopped")
         for rt in self.receivers.values():
             await rt.stop()
         for t in list(self._tasks):
@@ -313,10 +341,10 @@ class ControlCore:
 
     def _reply_result(self, rec: _CmdRecord, cmd_id: str, status: str, *, code: ErrorCode | None = None,
                       detail: str | None = None, capture_gen: int | None = None, channel: str | None = None,
-                      channel_gen: int | None = None) -> None:
+                      channel_gen: int | None = None, recording: str | None = None) -> None:
         rec.result = m.Result(v=1, type="result", id=cmd_id, status=status, code=code, detail=detail,
                               rev=self.store.rev, capture_gen=capture_gen, channel=channel,
-                              channel_gen=channel_gen)
+                              channel_gen=channel_gen, recording=recording)
         rec.finished = time.monotonic()
         for sid in rec.sessions:
             sess = self.sessions.get(sid)
@@ -533,7 +561,8 @@ class ControlCore:
 
     def _publish_channel(self, ch: _Channel) -> None:
         with self.store.txn() as t:
-            value = m.ChannelState(receiver=ch.receiver, owner=m.ChannelOwner(session=ch.session),
+            owner = m.ChannelOwner(job=ch.job) if ch.job else m.ChannelOwner(session=ch.session)
+            value = m.ChannelState(receiver=ch.receiver, owner=owner,
                                    frequency_hz=ch.frequency_hz, mode=ch.mode, channel_gen=ch.channel_gen,
                                    agc=ch.agc, passband_default=ch.passband is None,
                                    passband_hz=list(ch.applied_passband) if ch.applied_passband else None,
@@ -547,6 +576,10 @@ class ControlCore:
         """Remove from registry and state now; optionally tell the worker (best effort)."""
         ch.closing = True
         self._channels.pop(ch.id, None)
+        rec = self._rec_by_channel.get(ch.id)
+        if rec is not None:                                # e.g. no longer fits after a receiver retune
+            self._finish_recording(rec, "interrupted", "the receiver no longer covers this frequency",
+                                   drop_channel=False)
         owner = self.sessions.get(ch.session)
         if owner is not None:
             owner.forget_stream("c:" + ch.id)               # nothing of a closed channel is sent
@@ -662,6 +695,10 @@ class ControlCore:
                     or hdr.capture_gen != rt.capture_gen):
                 self.stream_stale["audio"] += 1
                 return
+            rec = self._rec_by_channel.get(ch.id)
+            if rec is not None:
+                self._record_audio(rec, hdr, payload)
+                return
             sess = self.sessions.get(ch.session)
             if sess is None:
                 return
@@ -669,6 +706,151 @@ class ControlCore:
                 sv.Kind.AUDIO, _stream_flags(hdr), ae.channel_gen,
                 hdr.first_sample_index, hdr.freq_origin_hz, hdr.sample_rate_hz, ch.id,
                 sv.AudioInfo(ae.level_cdb, ae.pass_lo_hz, ae.pass_hi_hz, int(ae.mode), int(ae.agc)), payload))
+
+    # ----- recordings (design §3.6)
+    def refresh_storage(self) -> None:
+        """Re-publish the storage summary (after a deletion over HTTP)."""
+        self._publish_storage()
+
+    def _publish_storage(self) -> None:
+        cat = self.recordings
+        if cat is None:
+            return
+        reason = cat.full_reason()
+        value = m.StorageState(used_bytes=cat.used_bytes(), cap_bytes=cat.policy.cap_bytes,
+                               free_bytes=cat.free_bytes(), full=reason is not None, detail=reason)
+        with self.store.txn() as t:
+            t.replace("storage", value=value)
+
+    def _publish_recording(self, rec: _Recording) -> None:
+        ch = rec.channel
+        value = m.RecordingState(receiver=ch.receiver, channel=ch.id, owner=rec.owner, frequency_hz=ch.frequency_hz,
+                                 mode=ch.mode, started_utc=rec.started_utc, file=rec.file,
+                                 seconds=round(rec.samples / 12000, 1), bytes=rec.writer.file_bytes, gaps=rec.gaps)
+        with self.store.txn() as t:
+            if rec.id in self.store.view()["recordings"]:
+                t.replace("recordings", rec.id, value=value)
+            else:
+                t.add("recordings", rec.id, value=value)
+
+    async def _op_recording_start(self, s: Session, cmd: m.RecordingStart) -> None:
+        a = cmd.args
+        if self.recordings is None:
+            raise Rejected(ErrorCode.E_UNSUPPORTED, "recording is not configured on this server")
+        reason = self.recordings.full_reason()
+        if reason:
+            self._publish_storage()
+            raise Rejected(ErrorCode.E_STORAGE_FULL, reason)
+        rt = self._receiver(a.receiver)
+        passband = tuple(a.passband_hz) if a.passband_hz is not None else None
+        offset = self._check_channel_fits(rt, a.mode, a.frequency_hz, passband)
+        mine = sum(1 for r in self._recs.values() if r.owner == s.principal.user)
+        if mine >= MAX_RECORDINGS_PER_PRINCIPAL:
+            raise Rejected(ErrorCode.E_BUSY, f"already {mine} recordings running (limit {MAX_RECORDINGS_PER_PRINCIPAL})")
+        on_rx = sum(1 for c in self._channels.values() if c.receiver == rt.id)
+        if on_rx >= wc.MAX_CHANNELS:
+            raise Rejected(ErrorCode.E_BUSY, f"{rt.id} already has {on_rx} channels (limit {wc.MAX_CHANNELS})")
+        self._reserve_channel_cmd(s)
+        n = next(self._channel_ids)
+        rid = f"rec_{next(self._rec_ids)}{int(time.time()) % 100000}"
+        ch = _Channel(id=f"ch_{n}", receiver=rt.id, session="", worker_id=n, frequency_hz=a.frequency_hz, mode=a.mode,
+                      agc=a.agc, passband=passband, manual_gain_db=a.manual_gain_db,
+                      job=f"job_{rid.replace('_', '-')}")
+        self._channels[ch.id] = ch
+        rec = self._reply_ack(s, cmd.id, "accepted")
+        self._spawn(self._start_recording(s, rec, cmd.id, rt, ch, rid, rt.link.channel_open(
+            self._worker_channel(ch, offset), rt.cfg.command_timeout)))
+
+    async def _start_recording(self, s: Session, rec_cmd: _CmdRecord, cmd_id: str, rt: ReceiverRuntime, ch: _Channel,
+                               rid: str, coro) -> None:
+        from ..devices.worker_client import WorkerFailed, WorkerGone, WorkerRejected, WorkerTimeout
+        try:
+            try:
+                ap = await coro
+            except (WorkerRejected, WorkerFailed) as e:
+                self._channels.pop(ch.id, None)
+                self._reply_result(rec_cmd, cmd_id, "failed", code=WORKER_RESULT_TO_CODE.get(e.result, ErrorCode.E_INTERNAL),
+                                   detail=f"worker refused: {e.result.name}")
+                return
+            except (WorkerTimeout, WorkerGone):
+                self._channels.pop(ch.id, None)
+                self._reply_result(rec_cmd, cmd_id, "failed", code=ErrorCode.E_DEVICE_FAILED,
+                                   detail="receiver worker did not open the recording channel")
+                return
+            ch.channel_gen, ch.open = ap.channel_gen, True
+            ch.applied_passband = self._applied_passband(ch.mode, ap)
+            started = datetime.now(timezone.utc)
+            path = self.recordings.unique_path(file_name(started, ch.frequency_hz, ch.mode))
+            try:
+                writer = WavWriter(path)
+                self.recordings.insert(rid, s.principal.user, ch.receiver, ch.frequency_hz, ch.mode,
+                                       started.isoformat(), path.name)
+            except OSError as e:
+                self._drop_channel(ch, tell_worker=True)
+                self._reply_result(rec_cmd, cmd_id, "failed", code=ErrorCode.E_STORAGE_FULL,
+                                   detail=f"cannot create the recording file: {e.strerror}")
+                return
+            r = _Recording(id=rid, owner=s.principal.user, channel=ch, writer=writer, started_utc=started.isoformat(),
+                           file=path.name, last_update=time.monotonic())
+            self._recs[rid] = r
+            self._rec_by_channel[ch.id] = r
+            self._publish_channel(ch)
+            self._publish_recording(r)
+            self._publish_storage()
+            self._reply_result(rec_cmd, cmd_id, "applied", channel=ch.id, channel_gen=ch.channel_gen, recording=rid)
+        finally:
+            self._release_channel_cmd(s.id)
+            self._expire_cmds()
+
+    def _record_audio(self, rec: _Recording, hdr: FrameHeader, payload: bytes) -> None:
+        if rec.started_audio and _stream_flags(hdr) & sv.Flags.DISCONTINUITY:
+            rec.gaps += 1
+        rec.started_audio = True
+        try:
+            rec.writer.write(payload)
+        except OSError as e:
+            self._finish_recording(rec, "failed", f"write failed: {e.strerror}")
+            return
+        rec.samples += len(payload) // 2
+        now = time.monotonic()
+        if now - rec.last_update >= RECORDING_STATE_INTERVAL_S:
+            rec.last_update = now
+            self.recordings.update(rec.id, bytes_=rec.writer.file_bytes, samples=rec.samples, gaps=rec.gaps)
+            reason = self.recordings.full_reason()
+            if reason:
+                self._finish_recording(rec, "storage_full", reason)
+                return
+            self._publish_recording(rec)
+            self._publish_storage()
+
+    def _finish_recording(self, rec: _Recording, status: str, detail: str | None = None, *,
+                          drop_channel: bool = True) -> None:
+        """Close the file and the catalog row, remove the recording from the state, free its channel."""
+        if self._recs.pop(rec.id, None) is None:
+            return
+        self._rec_by_channel.pop(rec.channel.id, None)
+        try:
+            rec.writer.close()
+        except OSError:
+            status, detail = "failed", "could not finalize the file"
+        self.recordings.update(rec.id, bytes_=rec.writer.file_bytes, samples=rec.samples, gaps=rec.gaps, status=status,
+                               detail=detail, ended=True)
+        if rec.id in self.store.view()["recordings"]:
+            with self.store.txn() as t:
+                t.remove("recordings", rec.id)
+        if drop_channel:
+            self._drop_channel(rec.channel, tell_worker=True)
+        self._publish_storage()
+
+    async def _op_recording_stop(self, s: Session, cmd: m.RecordingStop) -> None:
+        rec = self._recs.get(cmd.args.recording)
+        if rec is None:
+            raise Rejected(ErrorCode.E_UNKNOWN_RECORDING, f"no active recording {cmd.args.recording}")
+        if rec.owner != s.principal.user and "admin" not in s.principal.permissions:
+            raise Rejected(ErrorCode.E_FORBIDDEN, "only the user who started a recording (or an admin) can stop it")
+        self._finish_recording(rec, "done")
+        rec_cmd = self._reply_ack(s, cmd.id, "accepted")
+        self._reply_result(rec_cmd, cmd.id, "applied", recording=rec.id)
 
     async def _finish_channel(self, s: Session, rec: _CmdRecord, cmd_id: str, rt: ReceiverRuntime, ch: _Channel,
                               kind: str, coro) -> None:

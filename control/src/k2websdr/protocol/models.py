@@ -56,6 +56,7 @@ ReceiverId = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")]
 ChannelId = Annotated[str, Field(pattern=r"^ch_[a-z0-9]{1,32}$")]
 SessionId = Annotated[str, Field(pattern=r"^s_[A-Za-z0-9]{1,64}$")]
 JobId = Annotated[str, Field(pattern=r"^job_[a-z0-9-]{1,48}$")]
+RecordingId = Annotated[str, Field(pattern=r"^rec_[a-z0-9]{1,32}$")]
 ModeId = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")]          # ledger id
 PortId = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,16}$")]              # device-reported port id
 ShortText = Annotated[str, Field(max_length=256)]
@@ -181,6 +182,26 @@ class StreamSpectrumArgs(Strict):
     enabled: bool             # binary SPECTRUM messages for this receiver on this socket (stream v1)
 
 
+class RecordingStartArgs(Strict):
+    """Record clean demodulated audio (design §3.6) on a server-owned channel: it keeps recording
+    when the browser is suspended or closed, until stopped or storage runs out."""
+    receiver: ReceiverId
+    frequency_hz: Hz
+    mode: ModeId
+    agc: AgcName = "medium"
+    passband_hz: Passband | None = None
+    manual_gain_db: ManualGainDb = 0
+
+    @model_validator(mode="after")
+    def _passband(self) -> "RecordingStartArgs":
+        _check_passband(self.passband_hz)
+        return self
+
+
+class RecordingStopArgs(Strict):
+    recording: RecordingId
+
+
 class _Cmd(Strict):
     v: Literal[1]
     type: Literal["cmd"]
@@ -237,6 +258,16 @@ class ChannelClose(_Cmd):
     args: ChannelCloseArgs
 
 
+class RecordingStart(_Cmd):
+    op: Literal["recording.start"]
+    args: RecordingStartArgs
+
+
+class RecordingStop(_Cmd):
+    op: Literal["recording.stop"]
+    args: RecordingStopArgs
+
+
 class StreamSpectrum(_Cmd):
     op: Literal["stream.spectrum"]
     args: StreamSpectrumArgs
@@ -246,6 +277,7 @@ ClientMessage = Annotated[
     Union[
         SessionHello, StateSubscribe, ReceiverClaim, ReceiverRelease,
         ReceiverSetCapture, ReceiverSetAntenna, ReceiverSetHwGain, ChannelOpen, ChannelTune, ChannelClose, StreamSpectrum,
+        RecordingStart, RecordingStop,
     ],
     Field(discriminator="op"),
 ]
@@ -264,6 +296,8 @@ OP_PERMISSION: dict[str, str | None] = {
     "channel.tune": "listen",
     "channel.close": "listen",
     "stream.spectrum": "listen",
+    "recording.start": "record",
+    "recording.stop": "record",
 }
 
 # --------------------------------------------------------------------------
@@ -425,11 +459,36 @@ class LedgerSummary(Strict):
     available: list[ModeId] = []
 
 
+class RecordingState(Strict):
+    """An active recording (finished ones are listed over HTTP: /api/recordings)."""
+    receiver: ReceiverId
+    channel: ChannelId
+    owner: Annotated[str, Field(max_length=128)]          # principal, e.g. "user:adam"
+    frequency_hz: Hz
+    mode: ModeId
+    started_utc: Annotated[str, Field(max_length=40)]
+    file: Annotated[str, Field(max_length=128)]            # <UTC>_<frequency_hz>_<mode>.wav
+    seconds: Annotated[float, Field(ge=0)] = 0.0
+    bytes: Annotated[int, Field(strict=True, ge=0)] = 0
+    gaps: Annotated[int, Field(strict=True, ge=0)] = 0     # audio discontinuities inside the file
+
+
+class StorageState(Strict):
+    """Recording storage, visible to everyone who can record (B9: disk-full visible)."""
+    used_bytes: Annotated[int, Field(strict=True, ge=0)] = 0
+    cap_bytes: Annotated[int, Field(strict=True, ge=0)] = 0
+    free_bytes: Annotated[int, Field(strict=True, ge=0)] = 0     # on the filesystem
+    full: bool = False
+    detail: ShortText | None = None
+
+
 class ServerState(Strict):
     server: ServerInfo
     receivers: dict[ReceiverId, ReceiverState] = {}
     channels: dict[ChannelId, ChannelState] = {}
     jobs: dict[JobId, JobState] = {}
+    recordings: dict[RecordingId, RecordingState] = {}
+    storage: StorageState = StorageState()
     ledger: LedgerSummary
 
 
@@ -466,6 +525,7 @@ class Result(_Srv):
     capture_gen: Gen | None = None
     channel: ChannelId | None = None      # set by channel.open
     channel_gen: Gen | None = None
+    recording: RecordingId | None = None  # set by recording.start
 
     @model_validator(mode="after")
     def _code_iff_failed(self) -> "Result":

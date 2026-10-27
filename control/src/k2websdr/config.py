@@ -62,6 +62,8 @@ class Config:
     ws_messages_per_second: float = 20.0
     ws_burst: int = 40
     ws_session_recheck_s: float = 30.0       # idle sockets re-check their session at least this often
+    recordings_cap_bytes: int = 2 * 1024 ** 3        # admin-set storage cap for recordings (design §3.6)
+    recordings_min_free_bytes: int = 512 * 1024 ** 2  # stop recording before the disk gets this full
     spectrum_fft: int = 2048                 # spectrum/waterfall bins per receiver (power of two)
     spectrum_fps: int = 15                   # spectrum rows per second
     receivers: tuple[ReceiverEntry, ...] = field(default_factory=tuple)
@@ -73,6 +75,10 @@ class Config:
     @property
     def setup_token_path(self) -> Path:
         return self.state_dir / "setup-token"
+
+    @property
+    def recordings_dir(self) -> Path:
+        return self.state_dir / "recordings"
 
     @property
     def lock_dir(self) -> Path:
@@ -111,6 +117,8 @@ def validate(cfg: Config) -> Config:
         raise ConfigError("ws_session_recheck_s out of range")
     if not (64 <= cfg.spectrum_fft <= 65536 and cfg.spectrum_fft & (cfg.spectrum_fft - 1) == 0):
         raise ConfigError("spectrum_fft must be a power of two, 64..65536")
+    if cfg.recordings_cap_bytes < 0 or cfg.recordings_min_free_bytes < 0:
+        raise ConfigError("recordings_cap_bytes / recordings_min_free_bytes must be >= 0")
     if not 1 <= cfg.spectrum_fps <= 100:
         raise ConfigError("spectrum_fps must be 1..100")
     if not 1 <= cfg.session_hours <= 24 * 30:

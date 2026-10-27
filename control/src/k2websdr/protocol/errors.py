@@ -23,4 +23,6 @@ class ErrorCode(str, Enum):
     E_TIMEOUT = "E_TIMEOUT"
     E_STALE_PRECONDITION = "E_STALE_PRECONDITION"
     E_RATE_LIMITED = "E_RATE_LIMITED"
+    E_STORAGE_FULL = "E_STORAGE_FULL"          # recording storage cap reached or disk nearly full
+    E_UNKNOWN_RECORDING = "E_UNKNOWN_RECORDING"
     E_INTERNAL = "E_INTERNAL"
