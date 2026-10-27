@@ -9,7 +9,9 @@
 namespace k2::dsp {
 
 Spectrum::Spectrum(const SpectrumConfig& cfg) : cfg_(cfg) {
-    if (cfg.rate_hz == 0 || cfg.fft_n < 16 || cfg.fft_n > (1u << 16) || cfg.frames_per_s == 0 ||
+    // fft_n: a power of two, 16..65536. Odd sizes have no centre-symmetric shift and other sizes
+    // take liquid's slower mixed-radix paths; the display only needs powers of two.
+    if (cfg.rate_hz == 0 || !Spectrum::valid_fft_size(cfg.fft_n) || cfg.frames_per_s == 0 ||
         cfg.frames_per_s > cfg.rate_hz)
         throw std::invalid_argument("bad spectrum config");
     const uint64_t period = cfg.rate_hz / cfg.frames_per_s;
@@ -69,7 +71,7 @@ void Spectrum::emit(std::vector<SpectrumFrame>& out) {
     f.bins.resize(n);
     const float scale = norm_ / static_cast<float>(blocks);
     for (uint32_t k = 0; k < n; ++k) {
-        const uint32_t src = (k + n / 2) % n;   // FFT shift
+        const uint32_t src = (k + n - n / 2) % n;   // FFT shift: output bin k is frequency (k - n/2) * rate / n
         const float db = 10.0f * std::log10(acc_[src] * scale + 1e-30f);
         last_db_[k] = db;
         const float q = std::round((db - cfg_.db_floor) / cfg_.db_step);

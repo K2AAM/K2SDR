@@ -141,8 +141,9 @@ std::optional<Args> parse_args(int argc, char** argv) {
             else if (std::strcmp(v, "off") == 0) a.iq_frames = false;
             else return fail("bad --iq-frames (on|off)", v);
         } else if (k == "--spectrum-fft") {
-            if (!parse_bounded(v, a.spectrum_fft, 0, 1u << 16) || (a.spectrum_fft != 0 && a.spectrum_fft < 64))
-                return fail("bad --spectrum-fft (0 or 64..65536)", v);
+            if (!parse_bounded(v, a.spectrum_fft, 0, 1u << 16) ||
+                (a.spectrum_fft != 0 && (a.spectrum_fft < 64 || (a.spectrum_fft & (a.spectrum_fft - 1)) != 0)))
+                return fail("bad --spectrum-fft (0, or a power of two 64..65536)", v);
         } else if (k == "--spectrum-fps") {
             if (!parse_bounded(v, a.spectrum_fps, 1, 100)) return fail("bad --spectrum-fps (1..100)", v);
         } else if (k == "--frame-samples") {

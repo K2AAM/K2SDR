@@ -9,7 +9,7 @@ under ASan/UBSan (`make test-worker-san`).
 
 | | |
 |---|---|
-| FFT | `fft_n` 16..65536 (M1: 2048–4096), periodic Hann window, liquid internal FFT |
+| FFT | `fft_n` a power of two, 16..65536 (M1: 2048–4096); other sizes are rejected, periodic Hann window, liquid internal FFT |
 | Frames | `frames_per_s`; frame k ends at sample `k * rate / fps` (exact integer arithmetic) |
 | Averaging | the most recent max(1, ⌊period / fft_n⌋) non-overlapping blocks, power-averaged |
 | Order | FFT-shifted: bin 0 = −rate/2, bin n/2 = centre |
@@ -56,6 +56,7 @@ Own implementation (`dsp/agc.cpp`), replacing liquid's `agc_rrrf`. liquid's AGC 
   **no overshoot** on a +40 dB step (test: < 1 dB).
 - **Attack** 0.5 ms; **hang**, then exponential **decay**; gain = target / envelope, capped at
   `max_gain_db`.
+- Output delay equals `latency_samples()` exactly (look-ahead in samples; 0 look-ahead or AGC off: no delay).
 - Advanced parameters (`AgcConfig`): target, max gain, attack, look-ahead, hang, decay, manual
   gain.
 

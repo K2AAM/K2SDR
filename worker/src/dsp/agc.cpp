@@ -73,7 +73,9 @@ float Agc::next(float x) {
     }
     const float g = std::min(max_gain_, target_ / std::max(env_, 1e-30f));
 
-    // Delay line: output the sample that entered lookahead samples ago.
+    // Delay line: output the sample that entered lookahead samples ago (none: this sample, so the
+    // delay matches latency_samples() == 0).
+    if (lookahead_ == 0) return x * g;
     float out = delay_[delay_pos_];
     delay_[delay_pos_] = x;
     delay_pos_ = (delay_pos_ + 1) % delay_.size();
