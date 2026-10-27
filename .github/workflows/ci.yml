@@ -41,7 +41,8 @@ jobs:
         run: |
           . /etc/os-release && echo "$PRETTY_NAME"
           python3 --version; cc --version | head -1; c++ --version | head -1; cmake --version | head -1; uv --version
-          dpkg-query -W 'libairspyhf*' 'libusb-1.0*' libudev1 libcap2 || true   # THIRD_PARTY.md: runtime versions
+          # THIRD_PARTY.md: exact runtime versions, as an annotation (readable without the raw log)
+          echo "::notice title=Runtime packages::$(dpkg-query -W -f='${Package} ${Version}; ' 'libairspyhf*' 'libusb-1.0*' libudev1 libcap2 2>/dev/null)"
       - run: make sync
       - name: make probe
         run: |
