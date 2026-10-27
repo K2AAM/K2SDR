@@ -43,8 +43,12 @@ from . import pages
 
 log = logging.getLogger("k2websdr")
 COOKIE = "k2_session"
-CSP = ("default-src 'none'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self'; "
-       "frame-ancestors 'none'; base-uri 'none'")
+# script-src 'self': the built UI and its AudioWorklet (no inline scripts or styles anywhere).
+# connect-src names the WebSocket explicitly: older Safari does not match ws:/wss: with 'self'.
+CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self' {ws}; "
+       "form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+_ASSET_TYPES = {".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png",
+                ".woff2": "font/woff2", ".json": "application/json"}
 
 
 @dataclass
@@ -116,11 +120,12 @@ def create_app(cfg: Config, *, link_factory=None) -> FastAPI:
         if request.headers.get("host") not in allowed_hosts:
             return PlainTextResponse("bad host", status_code=400)
         resp: Response = await call_next(request)
-        resp.headers["Content-Security-Policy"] = CSP
+        host = request.headers.get("host")
+        resp.headers["Content-Security-Policy"] = CSP.format(ws=f"ws://{host} wss://{host}")
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["Referrer-Policy"] = "no-referrer"
         resp.headers["X-Frame-Options"] = "DENY"
-        if not request.url.path.startswith("/static/"):
+        if not (request.url.path.startswith("/static/") or request.url.path.startswith("/app/assets/")):
             resp.headers["Cache-Control"] = "no-store"
         return resp
 
@@ -178,8 +183,38 @@ def create_app(cfg: Config, *, link_factory=None) -> FastAPI:
         return Response(pages.CSS, media_type="text/css", headers={"Cache-Control": "public, max-age=3600"})
 
     # ------------------------------------------------------------------ pages
+    web_index = cfg.web_dir / "index.html"
+
     @app.get("/", response_class=HTMLResponse)
     async def home(request: Request):
+        if not acc.admin_exists(st.conn):
+            return RedirectResponse("/setup", status_code=303)
+        if session_of(request) is None:
+            return RedirectResponse("/login", status_code=303)
+        if web_index.is_file():                   # the receiver UI replaces the status page (M1 §3.5)
+            return RedirectResponse("/app/", status_code=303)
+        return await status_page(request)
+
+    @app.get("/app/", response_class=HTMLResponse)
+    async def app_index(request: Request):
+        if session_of(request) is None:
+            return RedirectResponse("/login", status_code=303)
+        if not web_index.is_file():
+            raise HTTPException(404, "browser UI not built (make web)")
+        return HTMLResponse(web_index.read_text("utf-8"))
+
+    @app.get("/app/assets/{name}")
+    async def app_asset(name: str):
+        # Hashed build output: no data in it, so no session needed; never a path outside assets/.
+        base = (cfg.web_dir / "assets").resolve()
+        path = (base / name).resolve()
+        if path.parent != base or not path.is_file() or path.suffix not in _ASSET_TYPES:
+            raise HTTPException(404)
+        return Response(path.read_bytes(), media_type=_ASSET_TYPES[path.suffix],
+                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+    @app.get("/status", response_class=HTMLResponse)
+    async def status_page(request: Request):
         if not acc.admin_exists(st.conn):
             return RedirectResponse("/setup", status_code=303)
         info = session_of(request)

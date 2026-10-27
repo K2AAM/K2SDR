@@ -100,3 +100,26 @@ the archive's symbols, both binaries' dynamic dependencies, symbol tables and li
 | JSON Schema 2020-12 | Generated protocol schema |
 Licenses above verified against installed package metadata (License-Expression/License fields), 2026-10-26.
 The HTML pages ship no third-party JavaScript or CSS.
+
+## Browser UI (web/; M1)
+
+Shipped in `web/dist` (bundled into the JavaScript, as listed by the build): only these three.
+
+| Component | Version | License | Source |
+| --- | --- | --- | --- |
+| Svelte (runtime) | 5.57.2 | MIT | https://github.com/sveltejs/svelte |
+| clsx | 2.1.1 | MIT | https://github.com/lukeed/clsx (Svelte runtime dependency) |
+| esm-env | 1.2.2 | MIT | https://github.com/benmccann/esm-env (Svelte runtime dependency) |
+
+Build and test only (not shipped). Exact versions are pinned in `web/package.json`, and the full
+tree in `web/package-lock.json`:
+
+| Component | Version | License | Source |
+| --- | --- | --- | --- |
+| Vite | 6.4.4 | MIT | https://vite.dev |
+| @sveltejs/vite-plugin-svelte | 5.1.1 | MIT | https://github.com/sveltejs/vite-plugin-svelte |
+| TypeScript | 5.9.3 | Apache-2.0 | https://www.typescriptlang.org |
+| svelte-check | 4.7.6 | MIT | https://github.com/sveltejs/language-tools |
+| Vitest | 3.2.7 | MIT | https://vitest.dev |
+| @tsconfig/svelte | 5.0.8 | MIT | https://github.com/tsconfig/bases |
+| Node.js / npm | Debian 13 system packages (`nodejs`, `npm`) | MIT / Artistic-2.0 | build time only; the service needs no Node |

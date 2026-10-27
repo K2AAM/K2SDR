@@ -51,6 +51,7 @@ class Config:
     runtime_dir: Path = Path("/run/k2aam-websdr")
     worker_bin: Path = Path("/usr/lib/k2aam-websdr/ksdr-worker")
     ledger: Path = Path("/usr/share/k2aam-websdr/ledger/modes.v1.json")
+    web_dir: Path = Path("/usr/share/k2aam-websdr/web")   # built browser UI (web/dist); absent: status page only
     build: str = "dev"
     allowed_hosts: tuple[str, ...] = ()      # Host header values accepted (DNS-rebinding guard)
     allowed_origins: tuple[str, ...] = ()    # Origin values accepted for POST and WebSocket
@@ -148,7 +149,7 @@ def load(path: str | Path) -> Config:
     unknown = set(srv) - set(Config.__dataclass_fields__) - {"receivers"}
     if unknown:
         raise ConfigError(f"unknown [server] keys: {sorted(unknown)}")
-    for key in ("state_dir", "runtime_dir", "worker_bin", "ledger"):
+    for key in ("state_dir", "runtime_dir", "worker_bin", "ledger", "web_dir"):
         if key in srv:
             p = Path(srv[key])
             srv[key] = p if p.is_absolute() else (base / p).resolve()

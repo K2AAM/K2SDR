@@ -7,7 +7,18 @@ state_dir = "../.dev-state/state"
 runtime_dir = "../.dev-state/run"
 worker_bin = "../build/worker/ksdr-worker"
 ledger = "../ledger/modes.v1.json"
+web_dir = "../web/dist"            # make web; without it / shows the status page
 build = "dev"
+
+[[receivers]]
+id = "replay-wwv"
+label = "Replay: WWV 10 MHz (real Airspy clip)"
+recording = "../fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta"
+
+[[receivers]]
+id = "replay-ft8"
+label = "Replay: 40 m FT8 (real Airspy clip)"
+recording = "../fixtures/real/airspyhf/airspyhf_ft8_40m_48k.sigmf-meta"
 
 [[receivers]]
 id = "replay-two-tone"

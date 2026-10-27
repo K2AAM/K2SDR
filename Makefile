@@ -3,7 +3,7 @@ UV      ?= uv
 PY      := $(UV) run --project control --frozen
 SCHEMA  := protocol/schema/control-v1.json
 
-.PHONY: help sync liquid dsp-deps dsp-bench worker worker-san probe test test-a1 test-worker-san schema schema-check fixtures fixtures-check ledger ledger-check run-dev check
+.PHONY: web web-test help sync liquid dsp-deps dsp-bench worker worker-san probe test test-a1 test-worker-san schema schema-check fixtures fixtures-check ledger ledger-check run-dev check
 help:
 	@echo "make sync          install pinned dev environment (control/uv.lock)"
 	@echo "make liquid        fetch (pinned, verified) and build liquid-dsp into build/third_party (no FFTW)"
@@ -20,6 +20,8 @@ help:
 	@echo "make fixtures-check fail if fixtures/iq differs from the generator"
 	@echo "make ledger        regenerate ledger/modes.v1.json from the outline appendix"
 	@echo "make run-dev       run the service on 127.0.0.1:8075 with replay fixtures"
+	@echo "make web           build the browser UI into web/dist (needs node >= 20.19 and npm)"
+	@echo "make web-test      browser UI: type check + unit tests (shared protocol vectors)"
 	@echo "make check         schema-check + fixtures-check + ledger-check + test"
 
 sync:
@@ -85,6 +87,12 @@ ledger:
 
 ledger-check:
 	python3 tools/import_ledger.py --check docs/outline/WebSDR_Project_Outline-v0.1.md ledger/modes.v1.json
+
+web:
+	cd web && npm ci --no-audit --no-fund && npm run build
+
+web-test:
+	cd web && npm ci --no-audit --no-fund && npm run check && npm test
 
 run-dev: worker
 	$(PY) k2websdr-server --config dev/k2websdr.dev.toml

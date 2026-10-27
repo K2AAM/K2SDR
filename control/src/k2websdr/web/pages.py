@@ -91,7 +91,7 @@ def modes_page(rows: list[tuple[str, str, str, list[str]]]) -> str:
     body = "".join(
         f"<tr><td><code>{escape(i)}</code></td><td>{escape(n)}</td><td>{escape(k)}</td>"
         f"<td>{'available' if not r else '<br>'.join(escape(x) for x in r)}</td></tr>" for i, n, k, r in rows)
-    return page("Modes", f"""<p><a href="/">← Status</a></p><h1>Mode availability</h1>
+    return page("Modes", f"""<p><a href="/status">← Status</a></p><h1>Mode availability</h1>
 <p class=muted>A mode is offered only when its adapter is integrated and tested and its dependency is present
 on this host. Each row says what is missing.</p>
 <table><tr><th>ID</th><th>Name</th><th>Kind</th><th>Status</th></tr>{body}</table>""")
