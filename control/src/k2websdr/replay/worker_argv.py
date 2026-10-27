@@ -70,3 +70,54 @@ def replay_argv(worker_bin: str | Path, rec: Recording, ident: WorkerIdentity, *
     if loop:
         argv.append("--loop")
     return argv
+
+
+@dataclass(frozen=True, slots=True)
+class HwGain:
+    """Airspy HF+ gain controls, set explicitly on every open (Window 1b: settings persist in the
+    device). Defaults are Adam's approved starting values (2026-10-26)."""
+    hf_agc: bool = True
+    hf_agc_threshold_high: bool = False
+    hf_lna: bool = True
+    hf_att: int = 0                          # 0..8; acts with AGC off
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.hf_att <= 8:
+            raise ValueError("hf_att must be 0..8")
+
+
+def airspyhf_argv(worker_bin: str | Path, ident: WorkerIdentity, *, serial: int, rate_hz: int, center_hz: int,
+                  ctl_fd: int, data_fd: int, gain: HwGain = HwGain(), frame_samples: int = 4096,
+                  capture_gen_start: int = 1, iq_frames: bool = True, spectrum_fft: int = 0,
+                  spectrum_fps: int = 15) -> list[str]:
+    """ksdr-worker --source airspyhf (M1). Integer Hz throughout."""
+    if not 0 < serial < 1 << 64:
+        raise ValueError("serial must be a non-zero u64")
+    if not 0 < center_hz <= 0xFFFFFFFF or not 0 < rate_hz <= 0xFFFFFFFF:
+        raise ValueError("center_hz/rate_hz out of range")
+    if not 1 <= frame_samples <= 1 << 20 or not 1 <= capture_gen_start <= 2**53 - 1:
+        raise ValueError("frame_samples/capture_gen_start out of range")
+    argv = [
+        str(worker_bin),
+        "--device-id", ident.device_id,
+        "--lock-dir", str(ident.lock_dir),
+        "--receiver-idx", str(ident.receiver_idx),
+        "--stream-id", str(ident.stream_id),
+        "--ctl-fd", str(ctl_fd),
+        "--data-fd", str(data_fd),
+        "--source", "airspyhf",
+        "--serial", f"{serial:016X}",
+        "--rate-hz", str(rate_hz),
+        "--center-hz", str(center_hz),
+        "--hf-agc", "on" if gain.hf_agc else "off",
+        "--hf-agc-threshold", "high" if gain.hf_agc_threshold_high else "low",
+        "--hf-lna", "on" if gain.hf_lna else "off",
+        "--hf-att", str(gain.hf_att),
+        "--frame-samples", str(frame_samples),
+        "--capture-gen-start", str(capture_gen_start),
+    ]
+    if not iq_frames:
+        argv += ["--iq-frames", "off"]
+    if spectrum_fft:
+        argv += ["--spectrum-fft", str(spectrum_fft), "--spectrum-fps", str(spectrum_fps)]
+    return argv

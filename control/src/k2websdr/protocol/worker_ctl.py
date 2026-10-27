@@ -34,6 +34,10 @@ CHANNEL_FIELDS = (("channel_id", "I"), ("mode", "H"), ("agc", "H"), ("offset_hz"
 CHANNEL_CLOSE_FIELDS = (("channel_id", "I"), ("reserved", "I"))
 CHANNEL_APPLIED_FIELDS = (("channel_gen", "Q"), ("capture_gen", "Q")) + CHANNEL_FIELDS + \
     (("channel_rate_hz", "I"), ("open", "I"))
+SET_HW_FIELDS = (("flags", "I"), ("hf_agc", "B"), ("hf_agc_threshold", "B"), ("hf_lna", "B"), ("hf_att", "B"),
+                 ("reserved", "Q"))
+HW_APPLIED_FIELDS = (("capture_gen", "Q"), ("hf_agc", "B"), ("hf_agc_threshold", "B"), ("hf_lna", "B"),
+                     ("hf_att", "B"), ("verified", "I"))
 
 
 def _st(fields: tuple[tuple[str, str], ...]) -> struct.Struct:
@@ -57,7 +61,10 @@ _STATUS = _st(STATUS_FIELDS)
 _CHANNEL = _st(CHANNEL_FIELDS)
 _CHANNEL_CLOSE = _st(CHANNEL_CLOSE_FIELDS)
 _CHANNEL_APPLIED = _st(CHANNEL_APPLIED_FIELDS)
+_SET_HW = _st(SET_HW_FIELDS)
+_HW_APPLIED = _st(HW_APPLIED_FIELDS)
 SIZES = {
+    "set_hw": _SET_HW.size, "hw_applied": _HW_APPLIED.size,
     "header": _HDR.size, "set_capture": _SET_CAPTURE.size, "ack": _ACK.size,
     "applied": _APPLIED.size, "failed": _FAILED.size, "status": _STATUS.size,
     "channel": _CHANNEL.size, "channel_close": _CHANNEL_CLOSE.size, "channel_applied": _CHANNEL_APPLIED.size,
@@ -70,6 +77,7 @@ class MsgType(IntEnum):
     SET_CAPTURE = 0x0001
     STOP = 0x0002
     PING = 0x0003
+    SET_HW = 0x0004
     CHANNEL_OPEN = 0x0010
     CHANNEL_TUNE = 0x0011
     CHANNEL_CLOSE = 0x0012
@@ -78,6 +86,7 @@ class MsgType(IntEnum):
     FAILED = 0x0083
     PONG = 0x0084
     CHANNEL_APPLIED = 0x0085
+    HW_APPLIED = 0x0086
     STATUS = 0x00C1
 
 
@@ -105,6 +114,17 @@ class SetCaptureFlags(IntFlag):
 
 
 SC_DEFINED_MASK = 0x3
+
+
+class HwFlags(IntFlag):
+    AGC = 1 << 0
+    AGC_THRESHOLD = 1 << 1
+    LNA = 1 << 2
+    ATT = 1 << 3
+
+
+HW_DEFINED_MASK = 0xF
+HW_ATT_MAX = 8
 
 
 class Mode(IntEnum):
@@ -139,6 +159,8 @@ PAYLOAD_LEN = {
     MsgType.CHANNEL_TUNE: _CHANNEL.size,
     MsgType.CHANNEL_CLOSE: _CHANNEL_CLOSE.size,
     MsgType.CHANNEL_APPLIED: _CHANNEL_APPLIED.size,
+    MsgType.SET_HW: _SET_HW.size,
+    MsgType.HW_APPLIED: _HW_APPLIED.size,
     MsgType.ACK: _ACK.size,
     MsgType.APPLIED: _APPLIED.size,
     MsgType.FAILED: _FAILED.size,
@@ -227,6 +249,49 @@ class Applied:
         if verified not in (0, 1):
             raise CtlError(f"bad verified value {verified}")
         return cls(gen, center, rate, verified)
+
+
+@dataclass(frozen=True, slots=True)
+class SetHw:
+    """SET_HW payload: Airspy HF+ gain controls. None = leave unchanged (at least one given)."""
+    hf_agc: bool | None = None
+    hf_agc_threshold_high: bool | None = None
+    hf_lna: bool | None = None
+    hf_att: int | None = None          # 0..8
+
+    def pack_payload(self) -> bytes:
+        flags = HwFlags(0)
+        for flag, value in ((HwFlags.AGC, self.hf_agc), (HwFlags.AGC_THRESHOLD, self.hf_agc_threshold_high),
+                            (HwFlags.LNA, self.hf_lna), (HwFlags.ATT, self.hf_att)):
+            if value is not None:
+                flags |= flag
+        if not flags:
+            raise CtlError("SET_HW must change at least one control")
+        if self.hf_att is not None and not 0 <= self.hf_att <= HW_ATT_MAX:
+            raise CtlError("hf_att must be 0..8")
+        return _SET_HW.pack(int(flags), int(bool(self.hf_agc)), int(bool(self.hf_agc_threshold_high)),
+                            int(bool(self.hf_lna)), self.hf_att or 0, 0)
+
+
+@dataclass(frozen=True, slots=True)
+class HwApplied:
+    capture_gen: int
+    hf_agc: bool
+    hf_agc_threshold_high: bool
+    hf_lna: bool
+    hf_att: int
+    verified: int                      # always 0: libairspyhf has no getters
+
+    def pack_payload(self) -> bytes:
+        return _HW_APPLIED.pack(self.capture_gen, int(self.hf_agc), int(self.hf_agc_threshold_high),
+                                int(self.hf_lna), self.hf_att, self.verified)
+
+    @classmethod
+    def unpack_payload(cls, buf: bytes) -> "HwApplied":
+        gen, agc, thr, lna, att, verified = _HW_APPLIED.unpack(buf)
+        if agc > 1 or thr > 1 or lna > 1 or att > HW_ATT_MAX or verified not in (0, 1):
+            raise CtlError("bad HW_APPLIED values")
+        return cls(gen, bool(agc), bool(thr), bool(lna), att, verified)
 
 
 def pack_result(msg: MsgType, result: Result) -> bytes:

@@ -56,6 +56,7 @@ class Callbacks:
     on_status: Callable[[wc.Status], None] = lambda s: None
     on_late_applied: Callable[[wc.Applied], None] = lambda a: None
     on_late_channel_applied: Callable[[wc.ChannelApplied], None] = lambda a: None
+    on_late_hw_applied: Callable[[wc.HwApplied], None] = lambda a: None
     on_exit: Callable[[int], None] = lambda code: None
 
 
@@ -139,7 +140,8 @@ class WorkerProcess:
         return seq
 
     async def _command(self, msg_type: wc.MsgType, payload: bytes, timeout: float):
-        """ACK, then APPLIED (SET_CAPTURE/STOP) or CHANNEL_APPLIED (CHANNEL_*), or FAILED."""
+        """ACK, then APPLIED (SET_CAPTURE/STOP), CHANNEL_APPLIED (CHANNEL_*) or HW_APPLIED (SET_HW),
+        or FAILED."""
         loop = asyncio.get_running_loop()
         seq = self._send(msg_type, payload)
         ack, done = loop.create_future(), loop.create_future()
@@ -160,6 +162,9 @@ class WorkerProcess:
 
     async def set_capture(self, center_hz: int | None, rate_hz: int | None, timeout: float) -> wc.Applied:
         return await self._command(wc.MsgType.SET_CAPTURE, wc.SetCapture(center_hz, rate_hz).pack_payload(), timeout)
+
+    async def set_hw(self, hw: wc.SetHw, timeout: float = 5.0) -> wc.HwApplied:
+        return await self._command(wc.MsgType.SET_HW, hw.pack_payload(), timeout)
 
     async def channel_open(self, ch: wc.Channel, timeout: float = 5.0) -> wc.ChannelApplied:
         return await self._command(wc.MsgType.CHANNEL_OPEN, ch.pack_payload(), timeout)
@@ -223,8 +228,9 @@ class WorkerProcess:
             fut = self._acks.get(hdr.cmd_seq)
             if fut and not fut.done():
                 fut.set_result(wc.unpack_result(t, payload))
-        elif t in (wc.MsgType.APPLIED, wc.MsgType.CHANNEL_APPLIED):
-            ap = (wc.Applied if t is wc.MsgType.APPLIED else wc.ChannelApplied).unpack_payload(payload)
+        elif t in (wc.MsgType.APPLIED, wc.MsgType.CHANNEL_APPLIED, wc.MsgType.HW_APPLIED):
+            ap = {wc.MsgType.APPLIED: wc.Applied, wc.MsgType.CHANNEL_APPLIED: wc.ChannelApplied,
+                  wc.MsgType.HW_APPLIED: wc.HwApplied}[t].unpack_payload(payload)
             fut = self._dones.pop(hdr.cmd_seq, None)
             if fut and not fut.done():
                 fut.set_result(ap)
@@ -232,6 +238,8 @@ class WorkerProcess:
                 self._timed_out.discard(hdr.cmd_seq)
                 if isinstance(ap, wc.ChannelApplied):
                     self._cb.on_late_channel_applied(ap)
+                elif isinstance(ap, wc.HwApplied):
+                    self._cb.on_late_hw_applied(ap)
                 else:
                     self._cb.on_late_applied(ap)
         elif t is wc.MsgType.FAILED:

@@ -58,6 +58,9 @@ test-worker-san: worker-san
 	K2_WORKER_BIN=$(CURDIR)/build/worker-san/ksdr-worker \
 	ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
 	$(PY) pytest control/tests/test_worker.py control/tests/test_worker_dsp.py
+	K2_WORKER_AIRSPYHF_MOCK_BIN=$(CURDIR)/build/worker-san/ksdr-worker-airspyhf-mock \
+	ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+	$(PY) pytest control/tests/test_worker_airspyhf.py
 	K2_DSP_RUN_BIN=$(CURDIR)/build/worker-san/ksdr-dsp-run \
 	ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
 	$(PY) pytest control/tests/test_dsp_pipeline.py
