@@ -62,6 +62,9 @@ class ReceiverConfig:
     paced: bool = True
     loop: bool = True
     frame_samples: int = 4096
+    iq_frames: bool = True                    # raw IQ frames to the service (decoders); off for listening only
+    spectrum_fft: int = 0                     # 0: no SPECTRUM frames; else a power of two 64..65536
+    spectrum_fps: int = 15
 
 
 @dataclass
@@ -358,7 +361,8 @@ def replay_link_factory(worker_bin: Path, lock_dir: Path) -> LinkFactory:
         def argv(ctl_fd: int, data_fd: int, gen_start: int) -> list[str]:
             return replay_argv(worker_bin, rt.cfg.recording, ident, ctl_fd=ctl_fd, data_fd=data_fd,
                                frame_samples=rt.cfg.frame_samples, paced=rt.cfg.paced, loop=rt.cfg.loop,
-                               capture_gen_start=gen_start)
+                               capture_gen_start=gen_start, iq_frames=rt.cfg.iq_frames,
+                               spectrum_fft=rt.cfg.spectrum_fft, spectrum_fps=rt.cfg.spectrum_fps)
 
         return WorkerProcess(argv, Callbacks(on_frame=rt.on_frame, on_status=rt.on_status,
                                              on_late_applied=rt.on_late_applied, on_exit=rt.on_exit))

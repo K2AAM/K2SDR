@@ -133,8 +133,17 @@ offset from the applied capture centre for the worker.
   removed from the state. After a worker restart, channels are opened again.
 - **Limits**: 4 channels per session and 16 per receiver (`E_BUSY`); at most 8 channel commands
   of one session waiting for the worker (`E_BUSY`, not recorded, like other capacity limits).
-- Passband, AGC and BFO use the mode defaults (`docs/design/M1-dsp.md`); controls for them,
-  and the binary spectrum/audio stream to the browser, are the next additions.
+- Passband, AGC and BFO use the mode defaults (`docs/design/M1-dsp.md`); controls for them
+  are a later addition.
+- **Audio** of a channel goes to its owner only, as binary stream v1 messages on the same socket
+  (`docs/protocol/stream-v1.md`).
+
+## Spectrum stream (M1)
+
+`stream.spectrum {receiver, enabled}` needs `listen` and gives an immediate result. While
+enabled, the socket receives that receiver's spectrum rows as binary stream v1 messages
+(`docs/protocol/stream-v1.md`): only the current `capture_gen`, newest row first under
+backpressure. Off by default and per session.
 
 ## Deferred within v1 (additive later)
 

@@ -37,7 +37,8 @@ class WorkerIdentity:
 
 def replay_argv(worker_bin: str | Path, rec: Recording, ident: WorkerIdentity, *, ctl_fd: int, data_fd: int,
                 frame_samples: int = 4096, paced: bool = False, loop: bool = False,
-                capture_gen_start: int = 1) -> list[str]:
+                capture_gen_start: int = 1, iq_frames: bool = True, spectrum_fft: int = 0,
+                spectrum_fps: int = 15) -> list[str]:
     if not 1 <= frame_samples <= 1 << 20:
         raise ValueError("frame_samples out of range")
     if not 1 <= capture_gen_start <= 2**53 - 1:
@@ -60,6 +61,10 @@ def replay_argv(worker_bin: str | Path, rec: Recording, ident: WorkerIdentity, *
     ]
     for d in rec.discontinuities:
         argv += ["--discontinuity", f"{d.sample_index}:{d.gap_samples}" if d.gap_samples else str(d.sample_index)]
+    if not iq_frames:
+        argv += ["--iq-frames", "off"]
+    if spectrum_fft:
+        argv += ["--spectrum-fft", str(spectrum_fft), "--spectrum-fps", str(spectrum_fps)]
     if paced:
         argv.append("--paced")
     if loop:

@@ -522,7 +522,8 @@
           "receiver.set_antenna": "#/$defs/ReceiverSetAntenna",
           "receiver.set_capture": "#/$defs/ReceiverSetCapture",
           "session.hello": "#/$defs/SessionHello",
-          "state.subscribe": "#/$defs/StateSubscribe"
+          "state.subscribe": "#/$defs/StateSubscribe",
+          "stream.spectrum": "#/$defs/StreamSpectrum"
         },
         "propertyName": "op"
       },
@@ -553,6 +554,9 @@
         },
         {
           "$ref": "#/$defs/ChannelClose"
+        },
+        {
+          "$ref": "#/$defs/StreamSpectrum"
         }
       ]
     },
@@ -1781,6 +1785,63 @@
         "args"
       ],
       "title": "StateSubscribe",
+      "type": "object"
+    },
+    "StreamSpectrum": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/StreamSpectrumArgs"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "stream.spectrum",
+          "title": "Op",
+          "type": "string"
+        },
+        "type": {
+          "const": "cmd",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "op",
+        "args"
+      ],
+      "title": "StreamSpectrum",
+      "type": "object"
+    },
+    "StreamSpectrumArgs": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "receiver": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "title": "Receiver",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiver",
+        "enabled"
+      ],
+      "title": "StreamSpectrumArgs",
       "type": "object"
     }
   },
