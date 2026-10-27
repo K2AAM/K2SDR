@@ -28,8 +28,11 @@ struct ChannelConfig {
     uint32_t in_rate_hz = 0;
     int64_t offset_hz = 0;
     Mode mode = Mode::USB;
-    int32_t pass_lo_hz = INT32_MIN;   // INT32_MIN: mode default
-    int32_t pass_hi_hz = INT32_MIN;
+    // default_passband: use the mode's default edges and ignore pass_lo/hi_hz. Otherwise the
+    // edges are taken as given (every int32 value is an edge; there is no in-band marker).
+    bool default_passband = true;
+    int32_t pass_lo_hz = 0;
+    int32_t pass_hi_hz = 0;
     int32_t bfo_hz = 700;             // CW pitch
     AgcConfig agc = AgcConfig::preset(AgcMode::Medium);
 };
@@ -58,6 +61,8 @@ class Channel {
     uint32_t channel_rate_hz() const { return ch_rate_; }
 
     static void default_passband(Mode m, int32_t& lo, int32_t& hi);
+    // True if [offset+lo, offset+hi] lies inside +-in_rate/2. Overflow-free for every int64 offset.
+    static bool fits_span(int64_t offset_hz, int32_t lo_hz, int32_t hi_hz, uint32_t in_rate_hz);
     static bool parse_mode(const std::string& s, Mode& m);
 
   private:

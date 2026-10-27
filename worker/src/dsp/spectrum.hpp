@@ -16,7 +16,7 @@ namespace k2::dsp {
 
 struct SpectrumConfig {
     uint32_t rate_hz = 0;
-    uint32_t fft_n = 4096;
+    uint32_t fft_n = 4096;      // a power of two, 16..65536 (Spectrum::valid_fft_size)
     uint32_t frames_per_s = 15;
     float db_floor = -127.5f;
     float db_step = 0.5f;   // 256 levels: -127.5 .. 0 dBFS
@@ -31,6 +31,7 @@ struct SpectrumFrame {
 class Spectrum {
   public:
     explicit Spectrum(const SpectrumConfig& cfg);
+    static constexpr bool valid_fft_size(uint32_t n) { return n >= 16 && n <= (1u << 16) && (n & (n - 1)) == 0; }
     ~Spectrum();
     Spectrum(const Spectrum&) = delete;
     Spectrum& operator=(const Spectrum&) = delete;

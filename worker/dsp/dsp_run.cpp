@@ -9,7 +9,7 @@
 //       stderr: one JSON line with stats at the end; invalid config -> {"error":...}, exit 2
 //   --block N (spectrum, channel): input chunk size in samples (default 4096); outputs must not
 //   depend on it.
-//   agc --mode M [--target DBFS] [--manual-gain DB]
+//   agc --mode M [--target DBFS] [--manual-gain DB] [--lookahead-ms MS]
 //       stdin: f32 at 12000 S/s   stdout: f32
 // All frequencies are integer Hz.
 
@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -128,6 +129,7 @@ int cmd_channel(int argc, char** argv) {
     std::string agc = "medium", levels_path;
     float target = -6.0f, manual = 0.0f;
     bool have_mode = false;
+    std::optional<long long> lo, hi;   // either given: explicit passband, the other edge from the mode
     size_t block = 4096;
     std::vector<std::pair<uint64_t, int64_t>> retunes;
     for (int i = 2; i < argc; ++i) {
@@ -140,8 +142,8 @@ int cmd_channel(int argc, char** argv) {
         else if (k == "--mode") {
             if (!Channel::parse_mode(v, c.mode)) usage("bad --mode");
             have_mode = true;
-        } else if (k == "--lo") c.pass_lo_hz = static_cast<int32_t>(parse_int(v, "--lo"));
-        else if (k == "--hi") c.pass_hi_hz = static_cast<int32_t>(parse_int(v, "--hi"));
+        } else if (k == "--lo") lo = parse_int(v, "--lo");
+        else if (k == "--hi") hi = parse_int(v, "--hi");
         else if (k == "--bfo") c.bfo_hz = static_cast<int32_t>(parse_int(v, "--bfo"));
         else if (k == "--agc") agc = v;
         else if (k == "--target") target = parse_float(v, "--target");
@@ -157,6 +159,15 @@ int cmd_channel(int argc, char** argv) {
         } else usage("unknown option " + k);
     }
     if (!c.in_rate_hz || !have_mode) usage("channel needs --rate and --mode");
+    if (lo || hi) {
+        int32_t dlo = 0, dhi = 0;
+        Channel::default_passband(c.mode, dlo, dhi);
+        const long long l = lo.value_or(dlo), h = hi.value_or(dhi);
+        if (l < INT32_MIN || l > INT32_MAX || h < INT32_MIN || h > INT32_MAX) usage("--lo/--hi out of int32 range");
+        c.default_passband = false;
+        c.pass_lo_hz = static_cast<int32_t>(l);
+        c.pass_hi_hz = static_cast<int32_t>(h);
+    }
     c.agc = AgcConfig::preset(parse_agc(agc));
     c.agc.target_dbfs = target;
     c.agc.manual_gain_db = manual;
@@ -206,7 +217,7 @@ int cmd_channel(int argc, char** argv) {
 
 int cmd_agc(int argc, char** argv) {
     std::string mode = "medium";
-    float target = -6.0f, manual = 0.0f;
+    float target = -6.0f, manual = 0.0f, lookahead = -1.0f;   // < 0: the preset's look-ahead
     for (int i = 2; i < argc; ++i) {
         std::string k = argv[i];
         if (i + 1 >= argc) usage("missing value for " + k);
@@ -214,9 +225,11 @@ int cmd_agc(int argc, char** argv) {
         if (k == "--mode") mode = v;
         else if (k == "--target") target = parse_float(v, "--target");
         else if (k == "--manual-gain") manual = parse_float(v, "--manual-gain");
+        else if (k == "--lookahead-ms") lookahead = parse_float(v, "--lookahead-ms");
         else usage("unknown option " + k);
     }
     AgcConfig c = AgcConfig::preset(parse_agc(mode));
+    if (lookahead >= 0) c.lookahead_ms = lookahead;
     c.target_dbfs = target;
     c.manual_gain_db = manual;
     Agc agc(c, kAudioRateHz);

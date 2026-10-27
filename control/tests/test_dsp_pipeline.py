@@ -83,6 +83,27 @@ def test_spectrum_negative_frequencies_and_white_noise_floor():
     assert abs(floor - expect) < 1.5, (floor, expect)                 # median of averaged chi^2 bins
 
 
+@pytest.mark.parametrize("n", [16, 64, 2048])
+def test_spectrum_matches_an_independent_numpy_reference(n):
+    """One block, no averaging: bins equal a numpy periodic-Hann FFT + fftshift, quantised the same way."""
+    rng = np.random.default_rng(n)
+    rate = 48000
+    x = (0.3 * (rng.standard_normal(3 * n) + 1j * rng.standard_normal(3 * n))).astype(np.complex64)
+    end, blocks, bins = spectrum(x, rate, n, fps=rate // n, block=n)[0]
+    w = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(n) / n)
+    seg = x[end - n:end].astype(np.complex128)                       # the block that frame used
+    p = np.abs(np.fft.fftshift(np.fft.fft(seg * w))) ** 2 / np.sum(w) ** 2
+    ref = np.clip(np.round((10 * np.log10(p + 1e-30) - FLOOR) / STEP), 0, 255)
+    assert blocks == 1
+    assert np.abs(bins.astype(int) - ref).max() <= 1                  # float32 vs float64 rounding
+
+
+@pytest.mark.parametrize("n", [15, 17, 1000, 1023, 3072, 131072])
+def test_spectrum_rejects_sizes_that_are_not_powers_of_two_in_range(n):
+    r = run("spectrum", "--format", "cf32", "--rate", 48000, "--fft", n, "--fps", 10, data=b"", ok=False)
+    assert r.returncode == 2 and b"bad spectrum config" in r.stderr
+
+
 def test_spectrum_frame_cadence_is_exact_and_blocks_average():
     rate, n, fps = 912000, 4096, 15
     frames = spectrum(tone(rate, 2.0, 1000, 0.01), rate, n, fps=fps)
@@ -252,6 +273,24 @@ def test_channel_output_is_deterministic_and_independent_of_chunking():
 def agc(x, mode, *extra):
     r = run("agc", "--mode", mode, *extra, data=np.asarray(x, np.float32).tobytes())
     return np.frombuffer(r.stdout, np.float32), json.loads(r.stderr.decode())
+
+
+def _lag(x, y, max_lag=200):
+    """Lag (samples) at which y best matches x."""
+    return max(range(max_lag), key=lambda d: float(np.dot(x[: len(x) - d], y[d:])))
+
+
+@pytest.mark.parametrize("lookahead_ms, latency", [(0, 0), (None, 60), (2.5, 30)])
+def test_agc_delay_equals_its_reported_latency(lookahead_ms, latency):
+    """White noise in, gain settled: the output is the input delayed by exactly latency_samples."""
+    x = np.random.default_rng(5).uniform(-0.05, 0.05, 2 * A)
+    extra = [] if lookahead_ms is None else ["--lookahead-ms", lookahead_ms]
+    y, info = agc(x, "medium", *extra)
+    assert info["latency_samples"] == latency
+    tail = slice(A, None)                                              # past the initial attack
+    assert _lag(x[tail], y[tail]) == latency
+    if latency == 0:                                                   # same sample, same sign, every time
+        assert np.all(np.sign(y[tail]) == np.sign(x[tail]))
 
 
 def step_signal(up: bool, seconds=12):

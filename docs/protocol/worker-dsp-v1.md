@@ -47,7 +47,10 @@ extension; readers already skip header bytes they do not know.
 - passband edges (relative to the tuned frequency);
 - CW BFO;
 - manual gain (centi-dB, used with AGC off);
-- flags `DEFAULT_PASSBAND` / `DEFAULT_BFO`.
+- flags `DEFAULT_PASSBAND` / `DEFAULT_BFO`. Only these flags select defaults: without
+  `DEFAULT_PASSBAND` both edges are taken literally (every int32 is an edge, including
+  INT32_MIN, which is simply out of range). CHANNEL_APPLIED and the AUDIO extension report the
+  edges of the filter that is running.
 
 All frequencies are integer Hz.
 
@@ -58,7 +61,7 @@ running:
 |---|---|
 | `E_BUSY` | the channel_id is already open, or 16 channels are already open |
 | `E_NOT_FOUND` (7, new) | TUNE or CLOSE of a channel that isn't open |
-| `E_OUT_OF_RANGE` | passband, span, rate or BFO is invalid |
+| `E_OUT_OF_RANGE` | passband, span, rate or BFO is invalid (any int64 offset is checked without overflow; existing channels and their generations are unchanged) |
 | `E_UNSUPPORTED` | unknown mode or AGC value |
 | `E_BAD_MESSAGE` | unknown flags, or a reserved field is not zero |
 
@@ -79,6 +82,6 @@ and bumps their generations. In the control service, late channel replies go to
 | Argument | Default | Meaning |
 |---|---|---|
 | `--iq-frames on\|off` | on | send raw `SAMPLES` frames (processing runs either way) |
-| `--spectrum-fft N` | 0 (off) | spectrum FFT size, 64..65536 |
+| `--spectrum-fft N` | 0 (off) | spectrum FFT size: a power of two, 64..65536 (others exit 64) |
 | `--spectrum-fps N` | 15 | spectrum frames per second, 1..100 |
 | `--start-after-ping` | off | replay: send no frames, and start no pacing clock, until the first PING is answered. Channels are opened first, so where audio starts is deterministic |

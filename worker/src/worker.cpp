@@ -200,8 +200,8 @@ void Worker::process_dsp(uint64_t start, uint32_t count, uint32_t block_flags) {
         ext.agc = ch.cfg.agc;
         const double lvl = std::clamp(static_cast<double>(ch.dsp->level_dbfs()) * 100.0, -2e9, 2e9);
         ext.level_cdb = static_cast<int32_t>(std::lround(lvl));
-        ext.pass_lo_hz = ch.cfg.pass_lo_hz;
-        ext.pass_hi_hz = ch.cfg.pass_hi_hz;
+        ext.pass_lo_hz = ch.dsp->config().pass_lo_hz;   // the filter that is running
+        ext.pass_hi_hz = ch.dsp->config().pass_hi_hz;
         data_out_.append(&ext, sizeof ext);
         data_out_.append(abuf_.data(), abuf_.size() * sizeof(int16_t));
         ch.audio_index += abuf_.size();
@@ -231,6 +231,7 @@ std::unique_ptr<dsp::Channel> Worker::build_channel(const kctl_channel_v1& c) co
     to_dsp_agc(c.agc, g);
     cc.agc = dsp::AgcConfig::preset(g);
     cc.agc.manual_gain_db = static_cast<float>(c.manual_gain_cdb) / 100.0f;
+    cc.default_passband = false;   // resolve_channel already applied DEFAULT_PASSBAND
     cc.pass_lo_hz = c.pass_lo_hz;
     cc.pass_hi_hz = c.pass_hi_hz;
     cc.bfo_hz = c.bfo_hz;
@@ -242,6 +243,10 @@ void Worker::send_channel_applied(uint64_t seq, const ChannelState& ch, bool ope
     ap.channel_gen = ch.channel_gen;
     ap.capture_gen = gen_;
     ap.channel = ch.cfg;
+    if (ch.dsp) {   // report the filter that is running
+        ap.channel.pass_lo_hz = ch.dsp->config().pass_lo_hz;
+        ap.channel.pass_hi_hz = ch.dsp->config().pass_hi_hz;
+    }
     ap.channel_rate_hz = ch.dsp ? ch.dsp->channel_rate_hz() : 0;
     ap.open = open ? 1u : 0u;
     send_ctl(KCTL_MSG_CHANNEL_APPLIED, seq, &ap, sizeof ap);

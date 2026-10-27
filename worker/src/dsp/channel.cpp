@@ -54,6 +54,13 @@ void Channel::default_passband(Mode m, int32_t& lo, int32_t& hi) {
     }
 }
 
+bool Channel::fits_span(int64_t offset_hz, int32_t lo_hz, int32_t hi_hz, uint32_t in_rate_hz) {
+    // offset + lo >= -half  <=>  offset >= -half - lo, and offset + hi <= half  <=>  offset <= half - hi.
+    // half < 2^31 and |lo|, |hi| <= 2^31, so both bounds are exact in int64 and nothing overflows.
+    const int64_t half = static_cast<int64_t>(in_rate_hz) / 2;
+    return offset_hz >= -half - static_cast<int64_t>(lo_hz) && offset_hz <= half - static_cast<int64_t>(hi_hz);
+}
+
 namespace {
 uint32_t channel_rate(Mode m) { return m == Mode::WFM ? 192000u : m == Mode::NFM ? 24000u : kAudioRateHz; }
 }  // namespace
@@ -70,16 +77,13 @@ void Channel::validate() const {
     if (cfg_.mode == Mode::CW && (cfg_.bfo_hz < 100 || cfg_.bfo_hz > 3000))
         throw std::invalid_argument("CW BFO must be 100..3000 Hz");
     // The whole channel must sit inside the capture span.
-    const int64_t half = static_cast<int64_t>(cfg_.in_rate_hz) / 2;
-    if (cfg_.offset_hz + cfg_.pass_lo_hz < -half || cfg_.offset_hz + cfg_.pass_hi_hz > half)
+    if (!fits_span(cfg_.offset_hz, cfg_.pass_lo_hz, cfg_.pass_hi_hz, cfg_.in_rate_hz))
         throw std::invalid_argument("channel passband lies outside the capture span");
 }
 
 Channel::Channel(const ChannelConfig& cfg) : cfg_(cfg), p_(std::make_unique<Impl>()) {
-    int32_t lo = 0, hi = 0;
-    default_passband(cfg_.mode, lo, hi);
-    if (cfg_.pass_lo_hz == INT32_MIN) cfg_.pass_lo_hz = lo;
-    if (cfg_.pass_hi_hz == INT32_MIN) cfg_.pass_hi_hz = hi;
+    if (cfg_.default_passband) default_passband(cfg_.mode, cfg_.pass_lo_hz, cfg_.pass_hi_hz);
+    cfg_.default_passband = false;   // config() reports the edges actually in use
     ch_rate_ = channel_rate(cfg_.mode);
     validate();
     p_->nco = nco_crcf_create(LIQUID_NCO);
@@ -104,8 +108,7 @@ Channel::Channel(const ChannelConfig& cfg) : cfg_(cfg), p_(std::make_unique<Impl
 Channel::~Channel() = default;
 
 void Channel::set_offset(int64_t offset_hz) {
-    const int64_t half = static_cast<int64_t>(cfg_.in_rate_hz) / 2;
-    if (offset_hz + cfg_.pass_lo_hz < -half || offset_hz + cfg_.pass_hi_hz > half)
+    if (!fits_span(offset_hz, cfg_.pass_lo_hz, cfg_.pass_hi_hz, cfg_.in_rate_hz))
         throw std::invalid_argument("channel passband lies outside the capture span");
     cfg_.offset_hz = offset_hz;
     // CW: the carrier lands at +bfo in the channel so it is heard as a bfo_hz tone.

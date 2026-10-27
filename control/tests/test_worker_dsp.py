@@ -287,10 +287,86 @@ def test_dsp_output_is_deterministic(recs, ident):
 
 
 @pytest.mark.parametrize("bad", [["--iq-frames", "maybe"], ["--spectrum-fft", "32"], ["--spectrum-fps", "0"],
-                                 ["--spectrum-fft", "70000"]])
+                                 ["--spectrum-fft", "70000"], ["--spectrum-fft", "1000"],
+                                 ["--spectrum-fft", "4095"], ["--spectrum-fft", "131072"]])
 def test_bad_dsp_arguments_exit_with_usage(recs, ident, bad):
     w = WorkerProc(recs["two_tone"], ident, extra_args=bad, expect_running=False)
     try:
         assert w.wait() == 64
     finally:
         w.close()
+
+
+# ----------------------------------------------------------------------------- review fixes (PR #23)
+
+I64_MIN, I64_MAX, I32_MIN = -(1 << 63), (1 << 63) - 1, -(1 << 31)
+
+
+def same_channel(w, ap: wc.ChannelApplied) -> wc.ChannelApplied:
+    """A no-change TUNE: returns the channel's current state without bumping its generation."""
+    c = ap.channel
+    res, now = w.channel(wc.MsgType.CHANNEL_TUNE, wc.Channel(c.channel_id, c.mode, c.agc, c.offset_hz,
+                                                              c.pass_lo_hz, c.pass_hi_hz, c.bfo_hz,
+                                                              c.manual_gain_cdb))
+    assert res is wc.Result.OK
+    return now
+
+
+def test_extreme_offsets_are_refused_and_the_span_boundaries_are_exact(recs, ident):
+    """48 kS/s: USB 300..2700 fits for offsets -24300..21300 (passband inside +-24000 Hz).
+
+    INT64_MIN/MAX used to overflow offset+edge (UBSan aborts the sanitizer build)."""
+    rec = recs["airspyhf_wwv10_48k"]
+    with worker(rec, ident) as w:
+        keep = open_ch(w, 1, M.AM, 0)
+        for cid, off in ((2, -24300), (3, 21300)):
+            open_ch(w, cid, M.USB, off)
+        for off in (-24301, 21301, I64_MIN, I64_MAX, I64_MIN + 1, I64_MAX - 1):
+            res, ap = w.channel(wc.MsgType.CHANNEL_OPEN, wc.Channel(9, M.USB, G.FAST, off))
+            assert (res, ap) == (wc.Result.E_OUT_OF_RANGE, None), off
+            res, ap = w.channel(wc.MsgType.CHANNEL_TUNE, wc.Channel(1, M.AM, G.MEDIUM, off))     # offset-only
+            assert (res, ap) == (wc.Result.E_OUT_OF_RANGE, None), off
+            res, ap = w.channel(wc.MsgType.CHANNEL_TUNE, wc.Channel(1, M.USB, G.MEDIUM, off))    # rebuild
+            assert (res, ap) == (wc.Result.E_OUT_OF_RANGE, None), off
+        now = same_channel(w, keep)
+        assert (now.channel_gen, now.channel.offset_hz) == (keep.channel_gen, 0)
+        assert w.channel(wc.MsgType.CHANNEL_OPEN, wc.Channel(9, M.USB, G.FAST, 21300))[0] is wc.Result.OK
+        frames = w.read_until_eos()
+    assert w.wait() == 0
+    gens = {f.header.audio_ext.channel_gen for f in kinds(frames, FrameKind.AUDIO, 1)}
+    assert gens == {keep.channel_gen}
+
+
+@pytest.mark.parametrize("edges", [(I32_MIN, 2700), (300, I32_MIN), (I32_MIN, I32_MIN)])
+def test_explicit_int32_min_edges_are_not_taken_as_defaults(recs, ident, edges):
+    rec = recs["airspyhf_ft8_40m_48k"]
+    with worker(rec, ident) as w:
+        res, ap = w.channel(wc.MsgType.CHANNEL_OPEN, wc.Channel(1, M.USB, G.FAST, 0, *edges))
+        assert (res, ap) == (wc.Result.E_OUT_OF_RANGE, None)
+        dflt = open_ch(w, 2, M.USB, 0)                                         # DEFAULT_PASSBAND still works
+        assert (dflt.channel.pass_lo_hz, dflt.channel.pass_hi_hz) == (300, 2700)
+        res, ap = w.channel(wc.MsgType.CHANNEL_TUNE, wc.Channel(2, M.USB, G.MEDIUM, 0, *edges))
+        assert (res, ap) == (wc.Result.E_OUT_OF_RANGE, None)
+        now = same_channel(w, dflt)
+        assert now.channel_gen == dflt.channel_gen
+        assert (now.channel.pass_lo_hz, now.channel.pass_hi_hz) == (300, 2700)
+        frames = w.read_until_eos()
+    au = kinds(frames, FrameKind.AUDIO, 2)
+    assert au and {(f.header.audio_ext.pass_lo_hz, f.header.audio_ext.pass_hi_hz) for f in au} == {(300, 2700)}
+    assert {f.header.audio_ext.channel_gen for f in au} == {dflt.channel_gen}
+
+
+def test_explicit_passband_is_what_is_reported_and_what_runs(recs, ident):
+    """APPLIED and AUDIO edges are read back from the running filter; a 1000..1400 Hz USB filter
+    keeps FT8 energy there and removes it elsewhere."""
+    rec = recs["airspyhf_ft8_40m_48k"]
+    with worker(rec, ident) as w:
+        ap = open_ch(w, 1, M.USB, 0, G.OFF, pass_lo_hz=1000, pass_hi_hz=1400, manual_gain_cdb=2000)
+        frames = w.read_until_eos()
+    assert (ap.channel.pass_lo_hz, ap.channel.pass_hi_hz) == (1000, 1400)
+    au = kinds(frames, FrameKind.AUDIO, 1)
+    assert {(f.header.audio_ext.pass_lo_hz, f.header.audio_ext.pass_hi_hz) for f in au} == {(1000, 1400)}
+    f, p = psd(audio(au))
+    inside = p[(f > 1050) & (f < 1350)].mean()
+    outside = p[((f > 300) & (f < 900)) | ((f > 1500) & (f < 2700))].mean()
+    assert 10 * np.log10(inside / outside) > 40

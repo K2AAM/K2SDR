@@ -42,7 +42,7 @@ struct Args {
 
     // M1 DSP outputs (worker/src/dsp). Off by default, so M0 behaviour is unchanged.
     bool iq_frames = true;           // SAMPLES frames of the raw capture
-    uint32_t spectrum_fft = 0;       // 0 = no SPECTRUM frames; else FFT size 64..65536
+    uint32_t spectrum_fft = 0;       // 0 = no SPECTRUM frames; else a power-of-two FFT size 64..65536
     uint32_t spectrum_fps = 15;      // SPECTRUM frames per second, 1..100
 };
 
