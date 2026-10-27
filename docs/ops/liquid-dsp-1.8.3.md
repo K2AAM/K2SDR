@@ -99,16 +99,26 @@ tested in the worker DSP PR, not here.
 `make dsp-bench` (`ksdr-dsp-check bench`): a spectrum frame is Hann window + FFT + |X|² + dB
 + uint8. "Channel" is the full chain at the given capture rate, per listener.
 
-| | cloud container (Xeon 2.1 GHz, AVX-512) | Optiplex |
+| | cloud container (Xeon 2.1 GHz, AVX-512) | **Optiplex** (Debian 13; build detected AVX2, no AVX-512), 2026-10-26 |
 |---|---|---|
-| FFT 2048 / frame | 29 µs / 48 µs | *pending* |
-| FFT 4096 / frame | 59 µs / 93 µs | *pending* |
-| 4096 at 20 fps | 0.19 % of a core | *pending* |
-| 4096 transforming every sample at 912k | 2.1 % | *pending* |
-| channel @ 384k (am/usb/lsb/cw/nfm/wfm) | 1.9–2.2 % (wfm 3.4 %) | *pending* |
-| channel @ 912k | 4.6–5.5 % (wfm 7.1 %) | *pending* |
+| FFT 2048 / frame | 29 µs / 48 µs | **20 µs / 31 µs** |
+| FFT 4096 / frame | 59 µs / 93 µs | **44 µs / 67 µs** |
+| 4096 at 20 fps | 0.19 % of a core | **0.13 %** |
+| 4096 transforming every sample at 912k | 2.1 % | **1.5 %** |
+| channel @ 192k | 0.8–0.9 % (wfm 2.7 %) | **0.6 % (wfm 1.8 %)** |
+| channel @ 384k (am/usb/lsb/cw/nfm/wfm) | 1.9–2.2 % (wfm 3.4 %) | **1.1–1.2 % (wfm 2.1 %)** |
+| channel @ 912k | 4.6–5.5 % (wfm 7.1 %) | **2.6–2.7 % (wfm 3.6 %)** |
 
 The internal FFT is not a bottleneck at the planned 2048–4096 sizes. Per-channel cost is
 dominated by mixing and resampling at the full capture rate. That is fine for M1's few
 listeners; a shared first decimation stage is the lever if many channels are needed later.
-**Performance is accepted only on Optiplex numbers.**
+**Accepted on the Optiplex numbers.** At the likely default of 384 kS/s:
+- capture: 2.7 % (Window 1b)
+- one 4096-point spectrum at 20 fps: 0.13 %
+- each listener: about 1.2 % (WFM 2.1 %)
+
+So ten listeners plus the spectrum stay under about 15 % of one core. The internal FFT stays.
+
+`make dsp-deps` on the Optiplex also passed with `--expect-fftw-installed --expect-debian-liquid`.
+There, Debian's FFTW-linked liquid-dsp 1.7.0 is actually installed (as OpenWebRX's
+dependencies), and the worker still uses only the project-built 1.8.3.
