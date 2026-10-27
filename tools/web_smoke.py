@@ -31,6 +31,8 @@ def main() -> int:
     ap.add_argument("--screenshot", type=Path)
     ap.add_argument("--wait-text", action="append", default=[], help="extra text that must appear")
     ap.add_argument("--timeout", type=float, default=15.0)
+    ap.add_argument("--mobile", action="store_true", help="iPhone-sized viewport (390x844, DPR 3, touch)")
+    ap.add_argument("--settle", type=float, default=1.0, help="seconds to let the page run before checking")
     a = ap.parse_args()
     from playwright.sync_api import sync_playwright
 
@@ -77,7 +79,9 @@ recording = "{ROOT}/fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta"
         problems: list[str] = []
         with sync_playwright() as p:
             browser = p.chromium.launch()
-            ctx = browser.new_context(viewport={"width": 1280, "height": 800})
+            ctx = (browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=3, is_mobile=True,
+                                       has_touch=True) if a.mobile
+                   else browser.new_context(viewport={"width": 1280, "height": 800}))
             ctx.add_cookies([{"name": cookie.name, "value": cookie.value, "url": BASE}])
             page = ctx.new_page()
             page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text}")
@@ -88,7 +92,7 @@ recording = "{ROOT}/fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta"
             for text in ["connected", "Replay: WWV 10 MHz", "running", *a.wait_text]:
                 page.locator("header, main").get_by_text(text, exact=False).filter(visible=True).first.wait_for(
                     timeout=a.timeout * 1000)
-            time.sleep(1.0)
+            time.sleep(a.settle)
             if a.screenshot:
                 page.screenshot(path=str(a.screenshot))
             browser.close()
