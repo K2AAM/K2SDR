@@ -132,6 +132,11 @@ class ChannelCloseArgs(Strict):
     channel: ChannelId
 
 
+class StreamSpectrumArgs(Strict):
+    receiver: ReceiverId
+    enabled: bool             # binary SPECTRUM messages for this receiver on this socket (stream v1)
+
+
 class _Cmd(Strict):
     v: Literal[1]
     type: Literal["cmd"]
@@ -183,10 +188,15 @@ class ChannelClose(_Cmd):
     args: ChannelCloseArgs
 
 
+class StreamSpectrum(_Cmd):
+    op: Literal["stream.spectrum"]
+    args: StreamSpectrumArgs
+
+
 ClientMessage = Annotated[
     Union[
         SessionHello, StateSubscribe, ReceiverClaim, ReceiverRelease,
-        ReceiverSetCapture, ReceiverSetAntenna, ChannelOpen, ChannelTune, ChannelClose,
+        ReceiverSetCapture, ReceiverSetAntenna, ChannelOpen, ChannelTune, ChannelClose, StreamSpectrum,
     ],
     Field(discriminator="op"),
 ]
@@ -203,6 +213,7 @@ OP_PERMISSION: dict[str, str | None] = {
     "channel.open": "listen",
     "channel.tune": "listen",
     "channel.close": "listen",
+    "stream.spectrum": "listen",
 }
 
 # --------------------------------------------------------------------------

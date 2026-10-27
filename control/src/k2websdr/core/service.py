@@ -16,6 +16,7 @@ import asyncio
 import itertools
 import re
 import time
+from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -24,7 +25,9 @@ from ..decoders.gate import GenerationGate
 from ..protocol import models as m
 from ..protocol.decoder import DecoderEvent
 from ..protocol.errors import ErrorCode
+from ..protocol import stream as sv
 from ..protocol import worker_ctl as wc
+from ..protocol.frame import FrameFlags, FrameHeader, FrameKind
 from .lease import Holder, LeaseError
 from .modes import WORKER_MODES, receiver_mode_problem, span_problem
 from .receiver import WORKER_RESULT_TO_CODE, ReceiverConfig, ReceiverRuntime
@@ -38,6 +41,8 @@ RECEIVER_QUEUE_LIMIT = 64     # per receiver: executing + queued hardware comman
 # Listener channels (see docs/protocol/control-v1.md, "Channels"):
 MAX_CHANNELS_PER_SESSION = 4
 MAX_CHANNEL_CMDS_PER_SESSION = 8   # channel commands of one session waiting for the worker
+# Browser stream v1 (see docs/protocol/stream-v1.md, "Backpressure"):
+STREAM_AUDIO_QUEUE_BYTES = 96_000  # pending audio per session (~1 s for 4 channels at 24 kB/s)
 
 
 @dataclass(frozen=True)
@@ -55,6 +60,15 @@ class Session:
         self.outbox: asyncio.Queue[m.BaseModel] = asyncio.Queue()
         self.subscribed = False
         self.closed = False
+        # Binary stream (stream v1). Control messages always go first; spectrum keeps only the
+        # newest row per receiver; audio is bounded and drops its oldest frames when full.
+        self.wake = asyncio.Event()
+        self._spectrum: OrderedDict[str, bytes] = OrderedDict()
+        self._audio: deque[tuple[str, bytes]] = deque()
+        self._audio_bytes = 0
+        self._dropped_streams: set[str] = set()     # next frame of these streams gets SERVER_DROP
+        self.stream_sent = Counter()                # kind name -> messages taken for sending
+        self.stream_dropped = Counter()             # kind name -> messages discarded for backpressure
 
     @property
     def holder(self) -> Holder:
@@ -64,6 +78,67 @@ class Session:
         if not self.closed:
             m.dump_server_message(msg)          # validates before anything leaves the server
             self.outbox.put_nowait(msg)
+            self.wake.set()
+
+    # ----- binary stream
+    def push_spectrum(self, receiver: str, msg: bytes) -> None:
+        if self.closed:
+            return
+        if self._spectrum.pop(receiver, None) is not None:
+            self.stream_dropped["spectrum"] += 1
+            self._dropped_streams.add("r:" + receiver)
+        self._spectrum[receiver] = self._flagged("r:" + receiver, msg)
+        self.wake.set()
+
+    def push_audio(self, channel: str, msg: bytes) -> None:
+        if self.closed:
+            return
+        self._audio.append((channel, self._flagged("c:" + channel, msg)))
+        self._audio_bytes += len(msg)
+        while self._audio_bytes > STREAM_AUDIO_QUEUE_BYTES and len(self._audio) > 1:
+            cid, old = self._audio.popleft()
+            self._audio_bytes -= len(old)
+            self.stream_dropped["audio"] += 1
+            for i, (c, later) in enumerate(self._audio):     # flag the next queued frame of that channel
+                if c == cid:
+                    self._audio[i] = (c, sv.with_flags(later, sv.Flags.SERVER_DROP))
+                    break
+            else:
+                self._dropped_streams.add("c:" + cid)
+        self.wake.set()
+
+    def _flagged(self, key: str, msg: bytes) -> bytes:
+        if key in self._dropped_streams:
+            self._dropped_streams.discard(key)
+            return sv.with_flags(msg, sv.Flags.SERVER_DROP)
+        return msg
+
+    def has_binary(self) -> bool:
+        return bool(self._audio or self._spectrum)
+
+    def next_binary(self) -> bytes | None:
+        """Next binary message to send: audio before spectrum (smaller, latency-sensitive)."""
+        if self._audio:
+            _, msg = self._audio.popleft()
+            self._audio_bytes -= len(msg)
+            self.stream_sent["audio"] += 1
+            return msg
+        if self._spectrum:
+            _, msg = self._spectrum.popitem(last=False)
+            self.stream_sent["spectrum"] += 1
+            return msg
+        return None
+
+    def forget_stream(self, key: str) -> None:
+        """Drop queued frames of a receiver ("r:<id>") or channel ("c:<id>") that is going away."""
+        kind, ident = key.split(":", 1)
+        if kind == "r":
+            self._spectrum.pop(ident, None)
+        else:
+            kept = deque((c, b) for c, b in self._audio if c != ident)
+            self._audio_bytes = sum(len(b) for _, b in kept)
+            self._audio = kept
+        self._dropped_streams.discard(key)
 
 
 @dataclass
@@ -135,6 +210,8 @@ class ControlCore:
         self._channel_ids = itertools.count(1)
         self._channel_cmds: dict[str, int] = {}          # session id -> channel commands in flight
         self._reconcile_locks: dict[str, asyncio.Lock] = {}
+        self._spectrum_subs: dict[str, set[str]] = {}    # receiver id -> session ids (stream.spectrum)
+        self.stream_stale = Counter()                    # frames the server refused as stale/unowned
         self.decoder_sink: list[DecoderEvent] = []
         self.store.subscribe(self._broadcast)
 
@@ -145,6 +222,7 @@ class ControlCore:
         rt = ReceiverRuntime(cfg, self.store, self.gate, link_factory)
         rt.lease.on_preempt(lambda prev, new, rid=cfg.receiver_id: self._on_preempt(rid, prev, new))
         rt.on_capture_change = lambda r, restarted: self._spawn(self._reconcile_channels(r, restarted))
+        rt.frame_listeners.append(self._on_frame)
         with self.store.txn() as t:
             t.add("receivers", cfg.receiver_id, value=rt.initial_state())
         self.receivers[cfg.receiver_id] = rt
@@ -176,6 +254,8 @@ class ControlCore:
                 rt.publish_lease()
         for ch in [c for c in self._channels.values() if c.session == s.id]:
             self._drop_channel(ch, tell_worker=True)
+        for subs in self._spectrum_subs.values():
+            subs.discard(s.id)
 
     def _broadcast(self, patch: m.Patch) -> None:
         for s in list(self.sessions.values()):
@@ -422,6 +502,9 @@ class ControlCore:
         """Remove from registry and state now; optionally tell the worker (best effort)."""
         ch.closing = True
         self._channels.pop(ch.id, None)
+        owner = self.sessions.get(ch.session)
+        if owner is not None:
+            owner.forget_stream("c:" + ch.id)               # nothing of a closed channel is sent
         if ch.id in self.store.view()["channels"]:
             with self.store.txn() as t:
                 t.remove("channels", ch.id)
@@ -482,6 +565,53 @@ class ControlCore:
         link = rt.link
         coro = link.channel_close(ch.worker_id, rt.cfg.command_timeout) if link is not None else None
         self._spawn(self._finish_channel(s, rec, cmd.id, rt, ch, "close", coro))
+
+    # ----- browser stream (stream v1)
+    async def _op_stream_spectrum(self, s: Session, cmd: m.StreamSpectrum) -> None:
+        rt = self._receiver(cmd.args.receiver)
+        subs = self._spectrum_subs.setdefault(rt.id, set())
+        if cmd.args.enabled:
+            subs.add(s.id)
+        else:
+            subs.discard(s.id)
+            s.forget_stream("r:" + rt.id)
+        self._immediate(s, cmd.id)
+
+    def _on_frame(self, rid: str, hdr: FrameHeader, payload: bytes) -> None:
+        """Worker frame -> browser stream. Stale generations never leave the server (outline §13)."""
+        rt = self.receivers.get(rid)
+        if rt is None:
+            return
+        if hdr.kind is FrameKind.SPECTRUM:
+            subs = self._spectrum_subs.get(rid)
+            if not subs:
+                return
+            if hdr.capture_gen != rt.capture_gen:
+                self.stream_stale["spectrum"] += 1
+                return
+            se = hdr.spectrum_ext
+            msg = sv.pack(sv.Kind.SPECTRUM, _stream_flags(hdr),
+                          hdr.capture_gen, hdr.first_sample_index, hdr.freq_origin_hz, hdr.sample_rate_hz, rid,
+                          sv.SpectrumInfo(se.db_floor_mdb, se.db_step_mdb, se.blocks), payload)
+            for sid in list(subs):
+                sess = self.sessions.get(sid)
+                if sess is not None:
+                    sess.push_spectrum(rid, msg)
+        elif hdr.kind is FrameKind.AUDIO:
+            ae = hdr.audio_ext
+            ch = next((c for c in self._channels.values()
+                       if c.worker_id == hdr.stream_id and c.receiver == rid), None)
+            if (ch is None or not ch.open or ch.closing or ae.channel_gen != ch.channel_gen
+                    or hdr.capture_gen != rt.capture_gen):
+                self.stream_stale["audio"] += 1
+                return
+            sess = self.sessions.get(ch.session)
+            if sess is None:
+                return
+            sess.push_audio(ch.id, sv.pack(
+                sv.Kind.AUDIO, _stream_flags(hdr), ae.channel_gen,
+                hdr.first_sample_index, hdr.freq_origin_hz, hdr.sample_rate_hz, ch.id,
+                sv.AudioInfo(ae.level_cdb, ae.pass_lo_hz, ae.pass_hi_hz, int(ae.mode), int(ae.agc)), payload))
 
     async def _finish_channel(self, s: Session, rec: _CmdRecord, cmd_id: str, rt: ReceiverRuntime, ch: _Channel,
                               kind: str, coro) -> None:
@@ -611,6 +741,16 @@ class ControlCore:
 
 
 _ULID = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
+
+
+def _stream_flags(hdr: FrameHeader) -> int:
+    """frame_v1 flags -> stream v1 flags. Any recorded or overflow loss is a DISCONTINUITY."""
+    out = sv.Flags(0)
+    if FrameFlags.NEW_GEN in hdr.flags:
+        out |= sv.Flags.NEW_GEN
+    if hdr.flags & (FrameFlags.DISCONTINUITY | FrameFlags.OVERFLOW):
+        out |= sv.Flags.DISCONTINUITY
+    return int(out)
 
 
 def _is_ulid(s: str) -> bool:

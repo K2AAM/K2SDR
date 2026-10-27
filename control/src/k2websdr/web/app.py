@@ -15,6 +15,7 @@ Security posture (outline §9; acceptance A10–A12):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -84,8 +85,11 @@ def create_app(cfg: Config, *, link_factory=None) -> FastAPI:
         factory = link_factory or replay_link_factory(cfg.worker_bin, cfg.lock_dir)
         for i, r in enumerate(cfg.receivers):
             rec = sigmf.load(r.recording)
+            # Listening needs no raw IQ in the service; the worker sends spectrum rows and audio.
             st.core.add_receiver(ReceiverConfig(receiver_id=r.id, label=r.label, receiver_idx=i, recording=rec,
-                                                takeover_policy=r.takeover_policy), factory)
+                                                takeover_policy=r.takeover_policy, iq_frames=False,
+                                                spectrum_fft=cfg.spectrum_fft, spectrum_fps=cfg.spectrum_fps),
+                                 factory)
         for rt in st.core.receivers.values():
             try:
                 await rt.start()
@@ -320,9 +324,23 @@ def create_app(cfg: Config, *, link_factory=None) -> FastAPI:
         bucket = TokenBucket(cfg.ws_messages_per_second, cfg.ws_burst)
 
         async def pump() -> None:
+            # One sender per socket. Control messages (text) always go first; then stream v1
+            # binary messages, which the session queue bounds and drops under backpressure.
             while True:
-                msg = await sess.outbox.get()
-                await ws.send_text(msg.model_dump_json())
+                try:
+                    msg = sess.outbox.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                else:
+                    await ws.send_text(msg.model_dump_json())
+                    continue
+                data = sess.next_binary()
+                if data is not None:
+                    await ws.send_bytes(data)
+                    continue
+                sess.wake.clear()
+                if sess.outbox.empty() and not sess.has_binary():
+                    await sess.wake.wait()
 
         async def receive_loop() -> str | None:
             while True:
