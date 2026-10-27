@@ -208,6 +208,17 @@
         "center_hz": {
           "$ref": "#/$defs/FrequencyField"
         },
+        "hw_gain": {
+          "$ref": "#/$defs/HwGainField",
+          "default": {
+            "applied": null,
+            "cmd": null,
+            "error": null,
+            "requested": null,
+            "status": "unsupported",
+            "verified": "none"
+          }
+        },
         "sample_rate_hz": {
           "$ref": "#/$defs/SampleRateField"
         }
@@ -521,6 +532,7 @@
           "receiver.release": "#/$defs/ReceiverRelease",
           "receiver.set_antenna": "#/$defs/ReceiverSetAntenna",
           "receiver.set_capture": "#/$defs/ReceiverSetCapture",
+          "receiver.set_hw_gain": "#/$defs/ReceiverSetHwGain",
           "session.hello": "#/$defs/SessionHello",
           "state.subscribe": "#/$defs/StateSubscribe",
           "stream.spectrum": "#/$defs/StreamSpectrum"
@@ -545,6 +557,9 @@
         },
         {
           "$ref": "#/$defs/ReceiverSetAntenna"
+        },
+        {
+          "$ref": "#/$defs/ReceiverSetHwGain"
         },
         {
           "$ref": "#/$defs/ChannelOpen"
@@ -799,6 +814,117 @@
         }
       },
       "title": "FrequencyField",
+      "type": "object"
+    },
+    "HwGain": {
+      "additionalProperties": false,
+      "description": "Airspy HF+ gain controls as set in the device (no getters exist: verified stays \"none\").",
+      "properties": {
+        "hf_agc": {
+          "title": "Hf Agc",
+          "type": "boolean"
+        },
+        "hf_agc_threshold": {
+          "enum": [
+            "low",
+            "high"
+          ],
+          "title": "Hf Agc Threshold",
+          "type": "string"
+        },
+        "hf_att": {
+          "maximum": 8,
+          "minimum": 0,
+          "title": "Hf Att",
+          "type": "integer"
+        },
+        "hf_lna": {
+          "title": "Hf Lna",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "hf_agc",
+        "hf_agc_threshold",
+        "hf_lna",
+        "hf_att"
+      ],
+      "title": "HwGain",
+      "type": "object"
+    },
+    "HwGainField": {
+      "additionalProperties": false,
+      "properties": {
+        "applied": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HwGain"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cmd": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cmd"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "requested": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HwGain"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "default": "idle",
+          "enum": [
+            "idle",
+            "pending",
+            "applied",
+            "failed",
+            "unsupported"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "verified": {
+          "default": "none",
+          "enum": [
+            "none",
+            "driver_readback",
+            "rf_evidence"
+          ],
+          "title": "Verified",
+          "type": "string"
+        }
+      },
+      "title": "HwGainField",
       "type": "object"
     },
     "JobState": {
@@ -1323,6 +1449,113 @@
         "receiver"
       ],
       "title": "ReceiverSetCaptureArgs",
+      "type": "object"
+    },
+    "ReceiverSetHwGain": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/ReceiverSetHwGainArgs"
+        },
+        "id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "op": {
+          "const": "receiver.set_hw_gain",
+          "title": "Op",
+          "type": "string"
+        },
+        "type": {
+          "const": "cmd",
+          "title": "Type",
+          "type": "string"
+        },
+        "v": {
+          "const": 1,
+          "title": "V",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "type",
+        "id",
+        "op",
+        "args"
+      ],
+      "title": "ReceiverSetHwGain",
+      "type": "object"
+    },
+    "ReceiverSetHwGainArgs": {
+      "additionalProperties": false,
+      "description": "Airspy HF+ hardware gain (M1). Only the given controls change; at least one.",
+      "properties": {
+        "hf_agc": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hf Agc"
+        },
+        "hf_agc_threshold": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hf Agc Threshold"
+        },
+        "hf_att": {
+          "anyOf": [
+            {
+              "maximum": 8,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hf Att"
+        },
+        "hf_lna": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hf Lna"
+        },
+        "receiver": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "title": "Receiver",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiver"
+      ],
+      "title": "ReceiverSetHwGainArgs",
       "type": "object"
     },
     "ReceiverState": {

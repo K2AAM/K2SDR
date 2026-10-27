@@ -392,6 +392,31 @@ class ControlCore:
         rec = self._reply_ack(s, cmd.id, "accepted")
         self._spawn(self._finish(rec, key, fut))
 
+    async def _op_receiver_set_hw_gain(self, s: Session, cmd: m.ReceiverSetHwGain) -> None:
+        """Hardware gain is global device state: lease + hw.retune, serialized with retunes."""
+        a = cmd.args
+        rt = self._receiver(a.receiver)
+        rt.lease.require(s.holder)
+        state = self.store.view()["receivers"][a.receiver]
+        field = state["capture"]["hw_gain"]
+        if field["status"] == "unsupported":
+            raise Rejected(ErrorCode.E_UNSUPPORTED, f"{a.receiver} has no hardware gain controls")
+        if state["acquisition"]["state"] != "running":
+            raise Rejected(ErrorCode.E_DEVICE_FAILED, f"{a.receiver} acquisition is {state['acquisition']['state']}")
+        # Start from the newest wish (a pending request), else what is applied: commands compose.
+        base = field["requested"] if field["status"] == "pending" else field["applied"]
+        if base is None:
+            raise Rejected(ErrorCode.E_DEVICE_FAILED, f"{a.receiver} has not reported its gain yet")
+        new = {k: v for k, v in (("hf_agc", a.hf_agc), ("hf_agc_threshold", a.hf_agc_threshold),
+                                 ("hf_lna", a.hf_lna), ("hf_att", a.hf_att)) if v is not None}
+        gain = m.HwGain(**{**base, **new})
+        self._check_capacity(rt)
+        _rev, fut = rt.submit_set_hw_gain(cmd.id, gain, authorize=self._authorizer(s, rt, "hw.retune", None))
+        key = (s.principal.user, cmd.id)
+        self._in_flight.add(key)
+        rec = self._reply_ack(s, cmd.id, "accepted")
+        self._spawn(self._finish(rec, key, fut))
+
     def _check_capacity(self, rt: ReceiverRuntime) -> None:
         if len(self._in_flight) >= self.in_flight_capacity:
             raise CapacityRejected(f"server busy: {len(self._in_flight)} hardware commands in progress "

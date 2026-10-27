@@ -60,6 +60,10 @@ invent features, or weaken explicit requirements unless Adam asks.
   Approved gain defaults: AGC on, threshold low, LNA on, attenuator 0.
   DSP: liquid-dsp 1.8.3 built without FFTW (`make liquid`, `docs/ops/liquid-dsp-1.8.3.md`);
   worker DSP library `k2dsp` (spectrum, channels, own look-ahead AGC): `docs/design/M1-dsp.md`.
+  Done: worker DSP, channels (control + browser stream v1, `docs/protocol/stream-v1.md`),
+  Airspy source in the worker (`docs/protocol/worker-live-v1.md`, mock-tested) and in the service
+  (`driver = "airspyhf"`, `receiver.set_hw_gain`, `docs/ops/airspyhf-receiver.md`). Next: Window 2
+  (first live run), then the Svelte UI, recording, Window 3.
   M1 branches: `m1/<topic>`.
 - Each block: branch `m0/<topic>` → PR → CI green → merge. Keep PRs reviewable.
 - Two Claude sessions may work on this repo: a cloud session (no LAN access)
