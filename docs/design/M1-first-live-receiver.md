@@ -93,6 +93,11 @@ baseband → decimating low-pass → demodulator → AGC → 12 kS/s audio.
 | WFM | Discriminator at wider bandwidth, 75 µs de-emphasis, mono |
 | AGC | Fast / Medium / Slow / Off, per channel (outline §3), separate from hardware gain |
 
+**Outcome (Adam, 2026-10-26):** Debian's liquid-dsp links FFTW (checked on the Optiplex:
+`libliquid1` depends on `libfftw3-single3`), so the worker uses **liquid-dsp 1.8.3 built from
+pinned source without FFTW**, statically, with its internal FFT; the project license stays
+pending. Details and measurements: `docs/ops/liquid-dsp-1.8.3.md`.
+
 **DSP library (decision needed, see §6):** use **liquid-dsp** (MIT, packaged in
 Debian; mature filters, NCOs, demodulators, AGC), which matches the outline's
 "established DSP libraries". Its FFT backend must be checked on the Optiplex: if

@@ -12,6 +12,20 @@ endif()
 
 option(K2_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
+# liquid-dsp: only the pinned, project-built static archive (tools/build_liquid.sh, no FFTW).
+# Imported by absolute path; there is deliberately no find_package/find_library fallback, so
+# Debian's libliquid (FFTW-linked) can never be picked up.
+set(K2_LIQUID_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/../build/third_party/liquid-dsp" CACHE PATH
+    "Prefix of the project-built liquid-dsp")
+if(NOT EXISTS "${K2_LIQUID_PREFIX}/lib/libliquid.a" OR NOT EXISTS "${K2_LIQUID_PREFIX}/include/liquid/liquid.h")
+  message(FATAL_ERROR "liquid-dsp not built at ${K2_LIQUID_PREFIX}: run `make liquid` (tools/build_liquid.sh)")
+endif()
+add_library(k2_liquid STATIC IMPORTED)
+set_target_properties(k2_liquid PROPERTIES
+  IMPORTED_LOCATION "${K2_LIQUID_PREFIX}/lib/libliquid.a"
+  INTERFACE_INCLUDE_DIRECTORIES "${K2_LIQUID_PREFIX}/include"       # imported => -isystem, ahead of /usr/include
+  INTERFACE_LINK_LIBRARIES m)
+
 add_executable(ksdr-worker
   src/main.cpp
   src/args.cpp
@@ -22,6 +36,16 @@ add_executable(ksdr-worker
 )
 target_include_directories(ksdr-worker PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/../protocol)
 target_compile_options(ksdr-worker PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror)
+target_link_libraries(ksdr-worker PRIVATE k2_liquid)
+# Link map: every input file the linker used (archives and members), checked by tools/check_dsp_deps.py.
+target_link_options(ksdr-worker PRIVATE "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/ksdr-worker.map")
+
+# liquid-dsp verification and benchmark harness (tests only; not shipped).
+add_executable(ksdr-dsp-check dsp/dsp_check.cpp)
+target_include_directories(ksdr-dsp-check PRIVATE src)
+target_compile_options(ksdr-dsp-check PRIVATE -Wall -Wextra -Werror -O2)
+target_link_libraries(ksdr-dsp-check PRIVATE k2_liquid)
+target_link_options(ksdr-dsp-check PRIVATE "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/ksdr-dsp-check.map")
 
 if(K2_SANITIZE)
   target_compile_options(ksdr-worker PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)

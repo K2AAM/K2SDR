@@ -61,6 +61,27 @@ The worker (`worker/`) links only the C/C++ standard libraries in M0; no SDR or 
 
 `ksdr-airspyhf-probe-mock` (tests) compiles against the libairspyhf header but links our own `worker/probe/mock_airspyhf.c`, not the library.
 
+## DSP (worker; M1)
+
+| Component | Version | License | Source |
+| --- | --- | --- | --- |
+| liquid-dsp | **1.8.3**, commit `10041f70cebbe3b97887e75bb41e48b73dda1b23` (tag v1.8.3, 2026-09-26) | MIT (notice kept in `third_party/liquid-dsp/LICENSE` and installed with the build) | https://github.com/jgaeddert/liquid-dsp — fetched and verified by `tools/fetch_liquid.py` (commit id + SHA-256 content manifest `0ce25baae2ab399a3b00f6cb12db5e4e8ac508ed0e5738435aa65e1e24df87f4`), built by `tools/build_liquid.sh`, linked **statically** into `ksdr-worker` and `ksdr-dsp-check` |
+
+Build options (recorded per build in `build/third_party/liquid-dsp/k2-build-info.json`):
+`BUILD_SHARED_LIBS=OFF BUILD_STATIC_LIBS=ON BUILD_EXAMPLES=OFF BUILD_AUTOTESTS=OFF
+BUILD_BENCHMARKS=OFF BUILD_SANDBOX=OFF BUILD_DOC=OFF FIND_FFTW=OFF ENABLE_TIMESTAMPS=OFF
+ENABLE_COLOR=OFF CMAKE_POSITION_INDEPENDENT_CODE=ON CMAKE_C_FLAGS=-DLIQUID_FFTOVERRIDE=1`,
+Release, project-local prefix `build/third_party/liquid-dsp`. SIMD extensions are detected
+on the build host (liquid's CMake runs test programs), so the archive is built for the machine
+that builds it.
+
+**FFTW is not used.** liquid-dsp's internal FFT is used instead. Debian 13's own
+`libliquid1` 1.7.0 depends on `libfftw3-single3` (FFTW, GPL-2.0-or-later); it is never
+linked: there is no `find_package`/`find_library` path to it, the worker includes the pinned
+header (compile-time version check `worker/src/liquid_pin.hpp`), and `tools/check_dsp_deps.py`
+(run by `make check` and CI, with FFTW and Debian's liquid-dsp installed on purpose) verifies
+the archive's symbols, both binaries' dynamic dependencies, symbol tables and linker maps.
+
 ## Specifications referenced (not code)
 
 | Item | Use |
