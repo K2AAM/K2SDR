@@ -69,3 +69,13 @@ Attach it in the chat (about 1 MB: measurements and short WAV clips).
 measurements, not verdicts: the analysis happens afterwards. That includes decoding the FT8
 clip, comparing the WWV tones, and the gain steps against Window 1b's about 5 dB per
 attenuator step.
+
+## Optional follow-up: CPU split (about 2 minutes)
+
+Window 2 measured the worker at 19 % of one core, about twice the estimate. This shows which
+threads use it: the worker's own (loop, ring, DSP), or libairspyhf/libusb. It does that with
+no DSP, with the spectrum, and with the spectrum plus two channels, 30 s each. Same setup as
+above: OpenWebRX stopped, k2dev in plugdev, restore both afterwards.
+```
+control/.venv/bin/python tools/window2/live_check.py --serial 3B52978026BA46DA --only-cpu
+```
