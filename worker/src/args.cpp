@@ -82,7 +82,8 @@ void print_usage(const char* prog) {
         "          --ctl-fd FD --data-fd FD --source replay --file PATH.sigmf-data\n"
         "          --format ci16|cf32|ri16|rf32 --rate-hz N --origin-hz N\n"
         "          [--discontinuity INDEX[:GAP]]... [--capture-gen-start N] [--frame-samples N]\n"
-        "          [--paced] [--loop]\n",
+        "          [--paced] [--loop] [--start-after-ping]\n"
+        "          [--iq-frames on|off] [--spectrum-fft N] [--spectrum-fps N]\n",
         prog);
 }
 
@@ -97,6 +98,7 @@ std::optional<Args> parse_args(int argc, char** argv) {
         std::string k = argv[i];
         if (k == "--paced") { a.paced = true; continue; }
         if (k == "--loop") { a.loop = true; continue; }
+        if (k == "--start-after-ping") { a.start_after_ping = true; continue; }
         if (i + 1 >= argc) return fail("missing value for", argv[i]);
         const char* v = argv[++i];
         if (k == "--device-id") {
@@ -134,6 +136,15 @@ std::optional<Args> parse_args(int argc, char** argv) {
             a.discontinuities.push_back(d);
         } else if (k == "--capture-gen-start") {
             if (!parse_bounded(v, a.capture_gen_start, 1, (1ull << 53) - 1)) return fail("bad --capture-gen-start", v);
+        } else if (k == "--iq-frames") {
+            if (std::strcmp(v, "on") == 0) a.iq_frames = true;
+            else if (std::strcmp(v, "off") == 0) a.iq_frames = false;
+            else return fail("bad --iq-frames (on|off)", v);
+        } else if (k == "--spectrum-fft") {
+            if (!parse_bounded(v, a.spectrum_fft, 0, 1u << 16) || (a.spectrum_fft != 0 && a.spectrum_fft < 64))
+                return fail("bad --spectrum-fft (0 or 64..65536)", v);
+        } else if (k == "--spectrum-fps") {
+            if (!parse_bounded(v, a.spectrum_fps, 1, 100)) return fail("bad --spectrum-fps (1..100)", v);
         } else if (k == "--frame-samples") {
             if (!parse_bounded(v, a.frame_samples, 1, 1u << 20)) return fail("bad --frame-samples", v);
         } else {
@@ -144,6 +155,7 @@ std::optional<Args> parse_args(int argc, char** argv) {
         a.data_fd < 0 || a.file.empty() || a.format == 0 || a.rate_hz == 0 || !have_origin)
         return fail("missing required arguments", nullptr);
     if (a.ctl_fd == a.data_fd) return fail("--ctl-fd and --data-fd must differ", nullptr);
+    if (a.spectrum_fft != 0 && a.spectrum_fps > a.rate_hz) return fail("--spectrum-fps exceeds the sample rate", nullptr);
     if (a.source != "replay") return fail("unsupported --source (M0 supports replay only)", a.source.c_str());
     bool real = a.format == KSDR_FMT_RI16 || a.format == KSDR_FMT_RF32;
     if (!real && a.origin_hz < 0) return fail("complex --origin-hz (center) must be >= 0", nullptr);

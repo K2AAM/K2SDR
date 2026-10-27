@@ -76,7 +76,7 @@ class WorkerProc:
         raw = _recv_exact(self.data, HEADER_LEN_V1, timeout)
         hdr = FrameHeader.unpack(raw)
         if hdr.header_len > HEADER_LEN_V1:
-            _recv_exact(self.data, hdr.header_len - HEADER_LEN_V1, timeout)
+            hdr = hdr.with_ext(_recv_exact(self.data, hdr.header_len - HEADER_LEN_V1, timeout))
         payload = _recv_exact(self.data, hdr.payload_len, timeout) if hdr.payload_len else b""
         return Frame(hdr, payload)
 
@@ -106,6 +106,19 @@ class WorkerProc:
 
     def set_capture(self, center_hz: int | None = None, rate_hz: int | None = None) -> int:
         return self.send(wc.MsgType.SET_CAPTURE, wc.SetCapture(center_hz, rate_hz).pack_payload())
+
+    def channel(self, msg: wc.MsgType, ch: wc.Channel | int) -> tuple[wc.Result, wc.ChannelApplied | None]:
+        """Send CHANNEL_OPEN/TUNE (a Channel) or CHANNEL_CLOSE (an id); return (ack result, applied)."""
+        payload = wc.pack_channel_close(ch) if msg is wc.MsgType.CHANNEL_CLOSE else ch.pack_payload()
+        seq = self.send(msg, payload)
+        hdr, p = self.read_ctl()
+        assert hdr.msg_type is wc.MsgType.ACK and hdr.cmd_seq == seq, hdr
+        res = wc.unpack_result(wc.MsgType.ACK, p)
+        if res is not wc.Result.OK:
+            return res, None
+        hdr, p = self.read_ctl()
+        assert hdr.msg_type is wc.MsgType.CHANNEL_APPLIED and hdr.cmd_seq == seq, hdr
+        return res, wc.ChannelApplied.unpack_payload(p)
 
     # ------------------------------------------------------------- process
     def wait(self, timeout: float = 5.0) -> int:

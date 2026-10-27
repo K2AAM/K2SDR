@@ -28,6 +28,12 @@ ACK_FIELDS = (("result", "I"), ("reserved", "I"))
 APPLIED_FIELDS = (("capture_gen", "Q"), ("center_hz", "q"), ("sample_rate_hz", "I"), ("verified", "I"))
 FAILED_FIELDS = (("result", "I"), ("reserved", "I"))
 STATUS_FIELDS = (("state", "I"), ("result", "I"), ("capture_gen", "Q"))
+CHANNEL_FIELDS = (("channel_id", "I"), ("mode", "H"), ("agc", "H"), ("offset_hz", "q"), ("pass_lo_hz", "i"),
+                  ("pass_hi_hz", "i"), ("bfo_hz", "i"), ("manual_gain_cdb", "i"), ("flags", "I"),
+                  ("reserved", "I"))
+CHANNEL_CLOSE_FIELDS = (("channel_id", "I"), ("reserved", "I"))
+CHANNEL_APPLIED_FIELDS = (("channel_gen", "Q"), ("capture_gen", "Q")) + CHANNEL_FIELDS + \
+    (("channel_rate_hz", "I"), ("open", "I"))
 
 
 def _st(fields: tuple[tuple[str, str], ...]) -> struct.Struct:
@@ -48,10 +54,15 @@ _ACK = _st(ACK_FIELDS)
 _APPLIED = _st(APPLIED_FIELDS)
 _FAILED = _st(FAILED_FIELDS)
 _STATUS = _st(STATUS_FIELDS)
+_CHANNEL = _st(CHANNEL_FIELDS)
+_CHANNEL_CLOSE = _st(CHANNEL_CLOSE_FIELDS)
+_CHANNEL_APPLIED = _st(CHANNEL_APPLIED_FIELDS)
 SIZES = {
     "header": _HDR.size, "set_capture": _SET_CAPTURE.size, "ack": _ACK.size,
     "applied": _APPLIED.size, "failed": _FAILED.size, "status": _STATUS.size,
+    "channel": _CHANNEL.size, "channel_close": _CHANNEL_CLOSE.size, "channel_applied": _CHANNEL_APPLIED.size,
 }
+MAX_CHANNELS = 16
 assert SIZES["header"] == HEADER_LEN_V1
 
 
@@ -59,10 +70,14 @@ class MsgType(IntEnum):
     SET_CAPTURE = 0x0001
     STOP = 0x0002
     PING = 0x0003
+    CHANNEL_OPEN = 0x0010
+    CHANNEL_TUNE = 0x0011
+    CHANNEL_CLOSE = 0x0012
     ACK = 0x0081
     APPLIED = 0x0082
     FAILED = 0x0083
     PONG = 0x0084
+    CHANNEL_APPLIED = 0x0085
     STATUS = 0x00C1
 
 
@@ -74,6 +89,7 @@ class Result(IntEnum):
     E_BUSY = 4
     E_BAD_MESSAGE = 5
     E_TIMEOUT = 6
+    E_NOT_FOUND = 7
 
 
 class WorkerState(IntEnum):
@@ -90,11 +106,39 @@ class SetCaptureFlags(IntFlag):
 
 SC_DEFINED_MASK = 0x3
 
+
+class Mode(IntEnum):
+    AM = 1
+    USB = 2
+    LSB = 3
+    CW = 4
+    NFM = 5
+    WFM = 6
+
+
+class Agc(IntEnum):
+    OFF = 1
+    FAST = 2
+    MEDIUM = 3
+    SLOW = 4
+
+
+class ChannelFlags(IntFlag):
+    DEFAULT_PASSBAND = 1 << 0
+    DEFAULT_BFO = 1 << 1
+
+
+CH_DEFINED_MASK = 0x3
+
 # Expected payload length per message type (exact; v1 has no variable payloads).
 PAYLOAD_LEN = {
     MsgType.SET_CAPTURE: _SET_CAPTURE.size,
     MsgType.STOP: 0,
     MsgType.PING: 0,
+    MsgType.CHANNEL_OPEN: _CHANNEL.size,
+    MsgType.CHANNEL_TUNE: _CHANNEL.size,
+    MsgType.CHANNEL_CLOSE: _CHANNEL_CLOSE.size,
+    MsgType.CHANNEL_APPLIED: _CHANNEL_APPLIED.size,
     MsgType.ACK: _ACK.size,
     MsgType.APPLIED: _APPLIED.size,
     MsgType.FAILED: _FAILED.size,
@@ -221,3 +265,81 @@ class Status:
             return cls(WorkerState(state), Result(result), gen)
         except ValueError as e:
             raise CtlError(str(e)) from None
+
+
+_I32 = (-(1 << 31), (1 << 31) - 1)
+
+
+@dataclass(frozen=True, slots=True)
+class Channel:
+    """CHANNEL_OPEN / CHANNEL_TUNE payload. Integer Hz. None = use the worker's default."""
+    channel_id: int
+    mode: Mode
+    agc: Agc
+    offset_hz: int
+    pass_lo_hz: int | None = None
+    pass_hi_hz: int | None = None
+    bfo_hz: int | None = None
+    manual_gain_cdb: int = 0
+
+    def pack_payload(self) -> bytes:
+        if (self.pass_lo_hz is None) != (self.pass_hi_hz is None):
+            raise CtlError("give both passband edges or neither")
+        flags = ChannelFlags(0)
+        if self.pass_lo_hz is None:
+            flags |= ChannelFlags.DEFAULT_PASSBAND
+        if self.bfo_hz is None:
+            flags |= ChannelFlags.DEFAULT_BFO
+        for name in ("pass_lo_hz", "pass_hi_hz", "bfo_hz", "manual_gain_cdb"):
+            v = getattr(self, name)
+            if v is not None and not _I32[0] <= v <= _I32[1]:
+                raise CtlError(f"{name} out of i32 range")
+        if not 0 <= self.channel_id <= 0xFFFFFFFF:
+            raise CtlError("channel_id out of u32 range")
+        return _CHANNEL.pack(self.channel_id, int(self.mode), int(self.agc), self.offset_hz,
+                             self.pass_lo_hz or 0, self.pass_hi_hz or 0, self.bfo_hz or 0,
+                             self.manual_gain_cdb, int(flags), 0)
+
+    @classmethod
+    def unpack_payload(cls, buf: bytes) -> "Channel":
+        cid, mode, agc, off, lo, hi, bfo, gain, flags, reserved = _CHANNEL.unpack(buf)
+        if flags & ~CH_DEFINED_MASK or reserved:
+            raise CtlError(f"bad channel flags {flags:#x}/reserved {reserved}")
+        try:
+            m, a = Mode(mode), Agc(agc)
+        except ValueError as e:
+            raise CtlError(str(e)) from None
+        dp, db = flags & ChannelFlags.DEFAULT_PASSBAND, flags & ChannelFlags.DEFAULT_BFO
+        return cls(cid, m, a, off, None if dp else lo, None if dp else hi, None if db else bfo, gain)
+
+
+def pack_channel_close(channel_id: int) -> bytes:
+    return _CHANNEL_CLOSE.pack(channel_id, 0)
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelApplied:
+    """What the worker now runs: defaults resolved; open False after CHANNEL_CLOSE."""
+    channel_gen: int
+    capture_gen: int
+    channel: Channel
+    channel_rate_hz: int
+    open: bool
+
+    def pack_payload(self) -> bytes:
+        c = self.channel
+        return _CHANNEL_APPLIED.pack(self.channel_gen, self.capture_gen, c.channel_id, int(c.mode), int(c.agc),
+                                     c.offset_hz, c.pass_lo_hz or 0, c.pass_hi_hz or 0, c.bfo_hz or 0,
+                                     c.manual_gain_cdb, 0, 0, self.channel_rate_hz, int(self.open))
+
+    @classmethod
+    def unpack_payload(cls, buf: bytes) -> "ChannelApplied":
+        (gen, cgen, cid, mode, agc, off, lo, hi, bfo, gain, flags, reserved, rate, is_open) = \
+            _CHANNEL_APPLIED.unpack(buf)
+        if flags or reserved or is_open not in (0, 1) or gen < 1:
+            raise CtlError("bad CHANNEL_APPLIED")
+        try:
+            ch = Channel(cid, Mode(mode), Agc(agc), off, lo, hi, bfo, gain)
+        except ValueError as e:
+            raise CtlError(str(e)) from None
+        return cls(gen, cgen, ch, rate, bool(is_open))

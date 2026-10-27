@@ -41,6 +41,7 @@ WORKER_RESULT_TO_CODE = {
     wc.Result.E_BUSY: ErrorCode.E_BUSY,
     wc.Result.E_BAD_MESSAGE: ErrorCode.E_INTERNAL,
     wc.Result.E_TIMEOUT: ErrorCode.E_TIMEOUT,
+    wc.Result.E_NOT_FOUND: ErrorCode.E_UNKNOWN_CHANNEL,
 }
 
 _FORMAT_NAME = {1: "ci16", 2: "cf32", 3: "ri16", 4: "rf32"}

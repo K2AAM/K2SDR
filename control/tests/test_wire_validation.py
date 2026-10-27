@@ -28,9 +28,20 @@ def patch(buf: bytes, field: str, value: int) -> bytes:
 
 def test_round_trip_every_format():
     for fmt in SampleFormat:
+        if fmt is SampleFormat.U8DB:                 # spectrum bins only (M1); covered below
+            continue
         h = hdr(format=fmt)
         assert FrameHeader.unpack(h.pack()) == h
         assert h.payload_len == 1024 * fmt.bytes_per_sample
+
+
+def test_u8db_round_trips_in_a_spectrum_frame_only():
+    from k2websdr.protocol.frame import SPECTRUM_HEADER_LEN, FrameKind, SpectrumExt
+    h = hdr(kind=FrameKind.SPECTRUM, format=SampleFormat.U8DB, header_len=SPECTRUM_HEADER_LEN,
+            ext=SpectrumExt(-127500, 500, 3).pack())
+    assert FrameHeader.unpack(h.pack()) == h and h.payload_len == 1024
+    with pytest.raises(FrameError):
+        hdr(format=SampleFormat.U8DB).pack()
 
 
 @pytest.mark.parametrize("field,value", [

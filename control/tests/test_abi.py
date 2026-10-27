@@ -146,10 +146,12 @@ def test_frame_constants(probe):
     c = probe["frame"]["consts"]
     assert c["magic"] == frame.MAGIC and c["version"] == frame.VERSION and c["header_len"] == frame.HEADER_LEN_V1
     assert (c["kind_samples"], c["kind_eos"]) == (frame.FrameKind.SAMPLES, frame.FrameKind.END_OF_STREAM)
-    assert [c["fmt_ci16"], c["fmt_cf32"], c["fmt_ri16"], c["fmt_rf32"]] == [int(x) for x in frame.SampleFormat]
+    SF = frame.SampleFormat
+    m0_formats = [SF.CI16, SF.CF32, SF.RI16, SF.RF32]       # M1 additions: test_abi_m1.py
+    assert [c["fmt_ci16"], c["fmt_cf32"], c["fmt_ri16"], c["fmt_rf32"]] == [int(x) for x in m0_formats]
     assert [c["f_disc"], c["f_gap"], c["f_ovf"], c["f_newgen"]] == [int(x) for x in frame.FrameFlags]
     assert c["f_mask"] == frame.FLAGS_DEFINED_MASK
-    assert c["bps"] == [0] + [fmt.bytes_per_sample for fmt in frame.SampleFormat]
+    assert c["bps"] == [0] + [fmt.bytes_per_sample for fmt in m0_formats]
 
 
 def _expected_frame_header() -> frame.FrameHeader:
@@ -176,7 +178,7 @@ def test_frame_bytes_identical_both_directions(probe):
 
 def test_ctl_layout(probe):
     c = probe["ctl"]
-    assert c["sizes"] == wc.SIZES
+    assert c["sizes"] == {k: wc.SIZES[k] for k in c["sizes"]}   # M1 structs: test_abi_m1.py
     assert c["offsets"] == wc.offsets(wc.HEADER_FIELDS)
     assert c["sc_offsets"] == wc.offsets(wc.SET_CAPTURE_FIELDS)
     assert c["applied_offsets"] == wc.offsets(wc.APPLIED_FIELDS)
@@ -187,10 +189,12 @@ def test_ctl_constants(probe):
     c = probe["ctl"]["consts"]
     assert (c["magic"], c["version"], c["header_len"], c["max_payload"]) == \
         (wc.MAGIC, wc.VERSION, wc.HEADER_LEN_V1, wc.MAX_PAYLOAD)
+    M = wc.MsgType
     assert [c[k] for k in ("set_capture", "stop", "ping", "ack", "applied", "failed", "pong", "status")] == \
-        [int(x) for x in wc.MsgType]
+        [int(x) for x in (M.SET_CAPTURE, M.STOP, M.PING, M.ACK, M.APPLIED, M.FAILED, M.PONG, M.STATUS)]
     assert [c[k] for k in ("ok", "e_unsupported", "e_out_of_range", "e_device", "e_busy", "e_bad_message",
-                           "e_timeout")] == [int(x) for x in wc.Result]
+                           "e_timeout")] == list(range(7))
+    assert [int(x) for x in wc.Result][:7] == list(range(7))
     assert [c[k] for k in ("st_starting", "st_running", "st_stopping", "st_failed")] == \
         [int(x) for x in wc.WorkerState]
     assert (c["sc_center"], c["sc_rate"], c["sc_mask"]) == \
