@@ -11,7 +11,7 @@ help:
 	@echo "make dsp-bench     benchmark M1 FFT sizes and channel chains on this machine"
 	@echo "make worker        build the C++ worker (build/worker/ksdr-worker)"
 	@echo "make probe         build the Airspy HF+ probe (needs libairspyhf-dev, pkg-config)"
-	@echo "make test-worker-san  worker tests against an ASan/UBSan build"
+	@echo "make test-worker-san  worker + DSP pipeline tests against an ASan/UBSan build"
 	@echo "make test          run all control tests"
 	@echo "make test-a1       A1: frequency/wire integer-Hz tests"
 	@echo "make schema        regenerate $(SCHEMA)"
@@ -58,6 +58,9 @@ test-worker-san: worker-san
 	K2_WORKER_BIN=$(CURDIR)/build/worker-san/ksdr-worker \
 	ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
 	$(PY) pytest control/tests/test_worker.py
+	K2_DSP_RUN_BIN=$(CURDIR)/build/worker-san/ksdr-dsp-run \
+	ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+	$(PY) pytest control/tests/test_dsp_pipeline.py
 
 test-a1:
 	$(PY) pytest control/tests/test_freq.py control/tests/test_models.py
