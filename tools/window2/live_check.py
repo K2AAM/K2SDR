@@ -351,6 +351,56 @@ class Window2:
         self.step("9_replug", attempts=attempt + 1, seconds_to_reopen=round(t0 - t_replug, 2),
                   spectrum_rows_3s=sum(1 for t, *_ in self.cap.spectrum if t >= t0))
 
+    def thread_cpu(self) -> dict[int, float]:
+        """CPU seconds per thread of the worker (tid -> user+system)."""
+        out = {}
+        tick = os.sysconf("SC_CLK_TCK")
+        for t in os.listdir(f"/proc/{self.wp.pid}/task"):
+            try:
+                st = Path(f"/proc/{self.wp.pid}/task/{t}/stat").read_text()
+                f = st[st.rindex(")") + 2:].split()
+                out[int(t)] = (int(f[11]) + int(f[12])) / tick
+            except (OSError, ValueError, IndexError):
+                pass
+        return out
+
+    async def s11_cpu_split(self) -> None:
+        """Where the worker's CPU goes (Window 2: 19 % of a core, about twice the estimate). Per thread:
+        the worker's own (main) thread runs the loop, ring and DSP; the others are libairspyhf/libusb."""
+        seconds = self.secs(30)
+        rows = []
+        configs = (("no_dsp", False, False), ("spectrum", True, False), ("spectrum_2ch", True, True))
+        for label, spectrum, chans in configs:
+            await self.start(10_000_000)
+            if not spectrum:                        # restart without spectrum frames
+                await self.wp.stop(10)
+                ident = WorkerIdentity(device_id=f"airspyhf-{self.a.serial:016x}", lock_dir=self.dir / "locks",
+                                       receiver_idx=0)
+                self.cap = Capture()
+                cap = self.cap
+                self.wp = WorkerProcess(
+                    lambda c, d, g: airspyhf_argv(self.a.worker, ident, serial=self.a.serial, rate_hz=RATE,
+                                                  center_hz=10_000_000, ctl_fd=c, data_fd=d, capture_gen_start=g,
+                                                  iq_frames=False),
+                    Callbacks(on_frame=cap.on_frame, on_status=cap.statuses.append, on_exit=cap.on_exit),
+                    start_timeout=10.0)
+                await self.wp.start(1)
+            if chans:
+                await self.open(7, M.AM, 10_000_000)
+                await self.open(8, M.USB, 10_001_000)
+            await asyncio.sleep(self.secs(3))
+            c0, t0 = self.thread_cpu(), time.monotonic()
+            await asyncio.sleep(seconds)
+            c1, t1 = self.thread_cpu(), time.monotonic()
+            pct = {tid: round(100 * (c1[tid] - c0.get(tid, 0)) / (t1 - t0), 2) for tid in c1}
+            main = pct.pop(self.wp.pid, 0.0)
+            rows.append({"config": label, "worker_main_thread_pct": main,
+                         "other_threads_pct": round(sum(pct.values()), 2), "other_threads": sorted(pct.values()),
+                         "total_pct": round(main + sum(pct.values()), 2)})
+            await self.wp.stop(10)
+            self.wp = None
+        self.step("11_cpu_split", rate_hz=RATE, rows=rows)
+
     async def s10_normal_stop(self) -> None:
         if self.wp is None or not self.wp.running:
             self.step("10_normal_stop", skipped="no worker running")
@@ -367,6 +417,8 @@ class Window2:
                  ("4b", lambda: self.s2_wwv_am("4_wwv15_am", 15)), ("5", self.s5_ssb_cw), ("6", self.s6_fm_chains),
                  ("7", self.s7_rate_change), ("8", self.s8_long_run), ("9", self.s9_unplug),
                  ("10", self.s10_normal_stop)]
+        if self.a.only_cpu:
+            steps = [("11", self.s11_cpu_split)]
         if self.a.only_unplug:
             steps = [("1", self.s1_open_and_spectrum), ("9", self.s9_unplug), ("10", self.s10_normal_stop)]
         say("== Window 2: first live run of the M1 worker on the Airspy HF+ ==", GREEN)
@@ -416,6 +468,7 @@ def main() -> int:
     ap.add_argument("--long-seconds", type=float, default=600)
     ap.add_argument("--skip-unplug", action="store_true")
     ap.add_argument("--only-unplug", action="store_true", help="open, unplug/replug, normal stop (about 1 minute)")
+    ap.add_argument("--only-cpu", action="store_true", help="per-thread CPU in three configurations (about 2 minutes)")
     ap.add_argument("--test", action="store_true", help="mock worker, short timings (development only)")
     ap.add_argument("--short", type=float, default=0.6, help="--test: seconds per timed wait")
     a = ap.parse_args()
