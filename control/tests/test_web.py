@@ -228,6 +228,9 @@ def test_security_headers(cfg):
         assert "default-src 'none'" in r.headers["content-security-policy"]
         assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
         assert r.headers["x-frame-options"] == "DENY" and r.headers["cache-control"] == "no-store"
+        # Not no-referrer: browsers then send "Origin: null" on our own form POSTs and setup/login
+        # fail with "cross-origin request refused" (Window 3, 2026-10-27).
+        assert r.headers["referrer-policy"] == "same-origin"
 
 
 def test_untrusted_text_is_escaped_in_pages(admin):

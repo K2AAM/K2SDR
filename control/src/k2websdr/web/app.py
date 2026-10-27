@@ -126,7 +126,9 @@ def create_app(cfg: Config, *, link_factory=None) -> FastAPI:
         host = request.headers.get("host")
         resp.headers["Content-Security-Policy"] = CSP.format(ws=f"ws://{host} wss://{host}")
         resp.headers["X-Content-Type-Options"] = "nosniff"
-        resp.headers["Referrer-Policy"] = "no-referrer"
+        # same-origin, not no-referrer: with no-referrer browsers send "Origin: null" on form POSTs,
+        # which the origin check (rightly) refuses. Cross-origin requests still get no referrer.
+        resp.headers["Referrer-Policy"] = "same-origin"
         resp.headers["X-Frame-Options"] = "DENY"
         if not (request.url.path.startswith("/static/") or request.url.path.startswith("/app/assets/")):
             resp.headers["Cache-Control"] = "no-store"
