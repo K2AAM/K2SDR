@@ -40,6 +40,29 @@ bool parse_bounded(const char* s, T& out, uint64_t lo, uint64_t hi) {
     return true;
 }
 
+bool parse_serial(const char* s, uint64_t& out) {
+    // 16 hex digits, optional 0x prefix (as airspyhf_info prints it).
+    std::string str(s);
+    if (str.size() > 2 && str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) str = str.substr(2);
+    if (str.empty() || str.size() > 16) return false;
+    uint64_t v = 0;
+    for (char c : str) {
+        int d = (c >= '0' && c <= '9') ? c - '0' : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+              : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+        if (d < 0) return false;
+        v = (v << 4) | static_cast<uint64_t>(d);
+    }
+    if (v == 0) return false;
+    out = v;
+    return true;
+}
+
+bool parse_onoff(const char* s, uint8_t& out, const char* on, const char* off) {
+    if (std::strcmp(s, on) == 0) { out = 1; return true; }
+    if (std::strcmp(s, off) == 0) { out = 0; return true; }
+    return false;
+}
+
 bool valid_device_id(const std::string& id) {
     if (id.empty() || id.size() > 64) return false;
     for (char c : id) {
@@ -83,21 +106,26 @@ void print_usage(const char* prog) {
         "          --format ci16|cf32|ri16|rf32 --rate-hz N --origin-hz N\n"
         "          [--discontinuity INDEX[:GAP]]... [--capture-gen-start N] [--frame-samples N]\n"
         "          [--paced] [--loop] [--start-after-ping]\n"
-        "          [--iq-frames on|off] [--spectrum-fft N] [--spectrum-fps N]\n",
+        "          [--iq-frames on|off] [--spectrum-fft N] [--spectrum-fps N]\n"
+        "   or: %s ... --source airspyhf --serial HEX --rate-hz N --center-hz N\n"
+        "          [--hf-agc on|off] [--hf-agc-threshold low|high] [--hf-lna on|off] [--hf-att 0..8]\n"
+        "          [--capture-gen-start N] [--frame-samples N] [--iq-frames ...] [--spectrum-* ...]\n",
+        prog,
         prog);
 }
 
 std::optional<Args> parse_args(int argc, char** argv) {
     Args a;
-    bool have_rx = false, have_stream = false, have_origin = false;
+    bool have_rx = false, have_stream = false, have_origin = false, have_center = false;
+    bool replay_only = false, live_only = false;
     auto fail = [&](const char* msg, const char* val) -> std::optional<Args> {
         std::fprintf(stderr, "ksdr-worker: %s%s%s\n", msg, val ? ": " : "", val ? val : "");
         return std::nullopt;
     };
     for (int i = 1; i < argc; ++i) {
         std::string k = argv[i];
-        if (k == "--paced") { a.paced = true; continue; }
-        if (k == "--loop") { a.loop = true; continue; }
+        if (k == "--paced") { a.paced = true; replay_only = true; continue; }
+        if (k == "--loop") { a.loop = true; replay_only = true; continue; }
         if (k == "--start-after-ping") { a.start_after_ping = true; continue; }
         if (i + 1 >= argc) return fail("missing value for", argv[i]);
         const char* v = argv[++i];
@@ -121,14 +149,36 @@ std::optional<Args> parse_args(int argc, char** argv) {
             a.source = v;
         } else if (k == "--file") {
             a.file = v;
+            replay_only = true;
         } else if (k == "--format") {
             if (!parse_format(v, a.format)) return fail("bad --format", v);
+            replay_only = true;
+        } else if (k == "--serial") {
+            if (!parse_serial(v, a.serial)) return fail("bad --serial (hex)", v);
+            a.have_serial = live_only = true;
+        } else if (k == "--center-hz") {
+            if (!parse_i64(v, a.origin_hz) || a.origin_hz <= 0 || a.origin_hz > std::numeric_limits<uint32_t>::max())
+                return fail("bad --center-hz (1..4294967295)", v);
+            have_center = live_only = true;
+        } else if (k == "--hf-agc") {
+            if (!parse_onoff(v, a.hf_agc, "on", "off")) return fail("bad --hf-agc (on|off)", v);
+            live_only = true;
+        } else if (k == "--hf-agc-threshold") {
+            if (!parse_onoff(v, a.hf_agc_threshold, "high", "low")) return fail("bad --hf-agc-threshold (low|high)", v);
+            live_only = true;
+        } else if (k == "--hf-lna") {
+            if (!parse_onoff(v, a.hf_lna, "on", "off")) return fail("bad --hf-lna (on|off)", v);
+            live_only = true;
+        } else if (k == "--hf-att") {
+            if (!parse_bounded(v, a.hf_att, 0, 8)) return fail("bad --hf-att (0..8)", v);
+            live_only = true;
         } else if (k == "--rate-hz") {
             if (!parse_bounded(v, a.rate_hz, 1, std::numeric_limits<uint32_t>::max())) return fail("bad --rate-hz", v);
         } else if (k == "--origin-hz") {
             if (!parse_i64(v, a.origin_hz)) return fail("bad --origin-hz", v);
-            have_origin = true;
+            have_origin = replay_only = true;
         } else if (k == "--discontinuity") {
+            replay_only = true;
             DiscontinuityArg d{};
             if (!parse_discontinuity(v, d)) return fail("bad --discontinuity", v);
             if (!a.discontinuities.empty() && d.sample_index <= a.discontinuities.back().sample_index)
@@ -153,11 +203,23 @@ std::optional<Args> parse_args(int argc, char** argv) {
         }
     }
     if (a.device_id.empty() || a.lock_dir.empty() || !have_rx || !have_stream || a.ctl_fd < 0 ||
-        a.data_fd < 0 || a.file.empty() || a.format == 0 || a.rate_hz == 0 || !have_origin)
+        a.data_fd < 0 || a.rate_hz == 0)
         return fail("missing required arguments", nullptr);
     if (a.ctl_fd == a.data_fd) return fail("--ctl-fd and --data-fd must differ", nullptr);
     if (a.spectrum_fft != 0 && a.spectrum_fps > a.rate_hz) return fail("--spectrum-fps exceeds the sample rate", nullptr);
-    if (a.source != "replay") return fail("unsupported --source (M0 supports replay only)", a.source.c_str());
+    if (a.source == "airspyhf") {
+#ifndef K2_HAVE_AIRSPYHF
+        return fail("this ksdr-worker was built without libairspyhf", nullptr);
+#endif
+        if (replay_only) return fail("--file/--format/--origin-hz/--discontinuity/--paced/--loop are replay-only", nullptr);
+        if (!a.have_serial || !have_center) return fail("airspyhf needs --serial and --center-hz", nullptr);
+        if (a.start_after_ping) return fail("--start-after-ping is replay-only", nullptr);
+        a.format = KSDR_FMT_CF32;   // libairspyhf delivers complex float32
+        return a;
+    }
+    if (a.source != "replay") return fail("unsupported --source", a.source.c_str());
+    if (live_only) return fail("--serial/--center-hz/--hf-* are for --source airspyhf", nullptr);
+    if (a.file.empty() || a.format == 0 || !have_origin) return fail("missing required arguments", nullptr);
     bool real = a.format == KSDR_FMT_RI16 || a.format == KSDR_FMT_RF32;
     if (!real && a.origin_hz < 0) return fail("complex --origin-hz (center) must be >= 0", nullptr);
     return a;

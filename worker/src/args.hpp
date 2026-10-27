@@ -25,12 +25,21 @@ struct Args {
     int ctl_fd = -1;
     int data_fd = -1;
 
-    // Source: replay only in M0
-    std::string source;              // "replay"
+    // Source: "replay" (M0) or "airspyhf" (M1, live; only in builds with libairspyhf)
+    std::string source;
     std::string file;                // .sigmf-data path
     uint16_t format = 0;             // enum ksdr_sample_format
     uint32_t rate_hz = 0;
-    int64_t origin_hz = 0;
+    int64_t origin_hz = 0;            // replay: recording origin; airspyhf: initial centre (--center-hz)
+
+    // airspyhf: device by serial, and every control set explicitly on open (device settings
+    // persist between processes, Window 1b H3). Defaults are Adam's approved starting values.
+    uint64_t serial = 0;
+    bool have_serial = false;
+    uint8_t hf_agc = 1;               // on
+    uint8_t hf_agc_threshold = 0;     // low
+    uint8_t hf_lna = 1;               // on
+    uint8_t hf_att = 0;               // 0..8, acts with AGC off
     std::vector<DiscontinuityArg> discontinuities;  // strictly increasing
 
     uint64_t capture_gen_start = 1;  // first generation; > previous worker's last on restart

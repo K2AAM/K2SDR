@@ -13,7 +13,9 @@ liquid-dsp itself
     liquid_fftwf_cleanup_wrapper (defined, body compiled out without FFTW).
 
 each binary (ksdr-worker, ksdr-dsp-check)
-  * Dynamic NEEDED entries are only the C/C++ runtime (no fftw, no shared liquid).
+  * Dynamic NEEDED entries are only the C/C++ runtime (no fftw, no shared liquid). ksdr-worker may
+    also need libairspyhf (the M1 device driver, BSD-3-Clause); then its whole runtime closure
+    (ldd: libairspyhf -> libusb-1.0 -> ...) must still contain no FFTW and no shared liquid-dsp.
   * Symbol table: no fftw symbol apart from the wrapper above. ldd/NEEDED cannot see a
     statically linked FFTW; its fftwf_* functions would show up here.
   * Linker map (-Wl,-Map): no input file whose path mentions fftw, exactly one libliquid
@@ -41,6 +43,7 @@ ALLOWED_FFTW_NAMED = {"liquid_fftwf_cleanup_wrapper"}
 ALLOWED_NEEDED = re.compile(r"^(libc\.so\.6|libm\.so\.6|libstdc\+\+\.so\.6|libgcc_s\.so\.1|libpthread\.so\.0|"
                             r"ld-linux-[\w-]+\.so\.\d)$")
 BINARIES = ("ksdr-worker", "ksdr-dsp-check", "ksdr-dsp-run")
+DEVICE_NEEDED = {"ksdr-worker": re.compile(r"^libairspyhf\.so\.\d+$")}
 
 
 def run(*cmd: str) -> str:
@@ -116,9 +119,16 @@ def check(build: Path, prefix: Path, expect_fftw: bool, expect_debian_liquid: bo
             continue
         needed = re.findall(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]", run("readelf", "-d", str(b)))
         r["needed"] = needed
-        bad = [n for n in needed if not ALLOWED_NEEDED.match(n)]
+        device = DEVICE_NEEDED.get(name)
+        bad = [n for n in needed if not ALLOWED_NEEDED.match(n) and not (device and device.match(n))]
         if bad:
             fails.append(f"{name}: unexpected shared libraries {bad}")
+        if device and any(device.match(n) for n in needed):
+            closure = re.findall(r"^\s*(\S+)\s+=>", run("ldd", str(b)), re.M)
+            r["runtime_closure"] = closure
+            offenders = [c for c in closure if "fftw" in c.lower() or "liquid" in c.lower()]
+            if offenders:
+                fails.append(f"{name}: runtime closure includes {offenders}")
         named = fftw_named(nm_symbols(b))
         if named:
             fails.append(f"{name}: FFTW symbols linked in: {named[:10]}")

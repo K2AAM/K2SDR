@@ -67,13 +67,24 @@ bool to_dsp_agc(uint16_t a, dsp::AgcMode& out) {
 }
 
 constexpr int32_t kDefaultBfoHz = 700;
+// Live source (docs/ops/airspyhf-measurements-2026-10-26.md, "Consequences for M1"):
+constexpr uint32_t kRetuneDiscardBlocks = 2;            // the step lands up to ~1 block after the call
+constexpr uint64_t kStallNs = 1000000000ull;            // no driver block for this long: device lost
+constexpr int kLiveHealthPollMs = 100;
+constexpr size_t kMaxDataBacklog = 8u << 20;            // bytes queued for the data socket
 constexpr float kSpectrumFloorDb = -127.5f;
 constexpr float kSpectrumStepDb = 0.5f;
 
 }  // namespace
 
-Worker::Worker(const Args& args, ReplaySource& src)
-    : a_(args), src_(src), gen_(args.capture_gen_start), dsp_fmt_(to_dsp_format(args.format)) {}
+Worker::Worker(const Args& args, ReplaySource* replay, LiveSource* live)
+    : a_(args), replay_(replay), live_(live), gen_(args.capture_gen_start), center_hz_(args.origin_hz),
+      rate_hz_(args.rate_hz), dsp_fmt_(to_dsp_format(args.format)) {
+    hw_.hf_agc = args.hf_agc;
+    hw_.hf_agc_threshold = args.hf_agc_threshold;
+    hw_.hf_lna = args.hf_lna;
+    hw_.hf_att = args.hf_att;
+}
 
 Worker::~Worker() = default;
 
@@ -82,9 +93,9 @@ uint64_t Worker::frame_deadline_ns(uint32_t count) const {
     // samples -> ns without overflow: whole seconds plus remainder (remainder < rate <= 2^32,
     // so remainder * 1e9 < 4.3e18 fits in 64 bits).
     const uint64_t samples = total_delivered_ + count;
-    const uint64_t secs = samples / a_.rate_hz;
-    const uint64_t rem = samples % a_.rate_hz;
-    return t0_ns_ + secs * 1000000000ull + rem * 1000000000ull / a_.rate_hz;
+    const uint64_t secs = samples / rate_hz_;
+    const uint64_t rem = samples % rate_hz_;
+    return t0_ns_ + secs * 1000000000ull + rem * 1000000000ull / rate_hz_;
 }
 
 void Worker::begin_generation() {
@@ -120,17 +131,17 @@ void Worker::write_header(uint16_t kind, uint16_t format, uint32_t flags, uint64
 
 // One block of capture samples: SAMPLES frame (unless --iq-frames off), then the DSP outputs.
 // END_OF_STREAM goes through here with count 0 and no DSP.
-void Worker::append_frame(uint16_t kind, uint64_t start, uint32_t count) {
+void Worker::append_frame(uint16_t kind, const uint8_t* data, uint32_t count) {
     const uint32_t flags = pending_flags_;
     const uint64_t gap = (pending_flags_ & KSDR_F_GAP_KNOWN) ? pending_gap_ : 0;
     if (kind != KSDR_KIND_SAMPLES || a_.iq_frames) {
-        write_header(kind, a_.format, flags, delivered_in_gen_, a_.origin_hz, gap, a_.stream_id, a_.rate_hz, count,
+        write_header(kind, a_.format, flags, delivered_in_gen_, center_hz_, gap, a_.stream_id, rate_hz_, count,
                      KSDR_FRAME_HEADER_LEN_V1);
         if (count > 0) {
-            data_out_.append(src_.at(start), static_cast<size_t>(count) * ksdr_bytes_per_sample(a_.format));
+            data_out_.append(data, static_cast<size_t>(count) * ksdr_bytes_per_sample(a_.format));
         }
     }
-    if (kind == KSDR_KIND_SAMPLES && count > 0) process_dsp(start, count, flags);
+    if (kind == KSDR_KIND_SAMPLES && count > 0) process_dsp(data, count, flags);
     pending_flags_ = 0;
     pending_gap_ = 0;
     delivered_in_gen_ += count;
@@ -140,7 +151,7 @@ void Worker::append_frame(uint16_t kind, uint64_t start, uint32_t count) {
 void Worker::reset_dsp_for_new_generation() {
     if (a_.spectrum_fft) {
         dsp::SpectrumConfig sc;
-        sc.rate_hz = a_.rate_hz;
+        sc.rate_hz = rate_hz_;
         sc.fft_n = a_.spectrum_fft;
         sc.frames_per_s = a_.spectrum_fps;
         sc.db_floor = kSpectrumFloorDb;
@@ -165,18 +176,18 @@ void Worker::reset_dsp_for_new_generation() {
     }
 }
 
-void Worker::process_dsp(uint64_t start, uint32_t count, uint32_t block_flags) {
+void Worker::process_dsp(const uint8_t* data, uint32_t count, uint32_t block_flags) {
     if (!spectrum_ && channels_.empty()) return;
     cbuf_.resize(count);
-    dsp::to_complex(dsp_fmt_, src_.at(start), count, cbuf_.data());
+    dsp::to_complex(dsp_fmt_, data, count, cbuf_.data());
     const uint32_t disc = block_flags & KSDR_F_DISCONTINUITY;
     if (spectrum_) {
         spectrum_pending_ |= disc;
         sframes_.clear();
         spectrum_->push(cbuf_.data(), count, sframes_);
         for (const auto& f : sframes_) {
-            write_header(KSDR_KIND_SPECTRUM, KSDR_FMT_U8DB, spectrum_pending_, f.end_sample, a_.origin_hz, 0, 0,
-                         a_.rate_hz, static_cast<uint32_t>(f.bins.size()), KSDR_SPECTRUM_HEADER_LEN);
+            write_header(KSDR_KIND_SPECTRUM, KSDR_FMT_U8DB, spectrum_pending_, f.end_sample, center_hz_, 0, 0,
+                         rate_hz_, static_cast<uint32_t>(f.bins.size()), KSDR_SPECTRUM_HEADER_LEN);
             ksdr_spectrum_ext_v1 ext{};
             ext.db_floor_mdb = static_cast<int32_t>(std::lround(kSpectrumFloorDb * 1000.0f));
             ext.db_step_mdb = static_cast<uint32_t>(std::lround(kSpectrumStepDb * 1000.0f));
@@ -192,7 +203,7 @@ void Worker::process_dsp(uint64_t start, uint32_t count, uint32_t block_flags) {
         ch.dsp->process(cbuf_.data(), count, abuf_);
         if (abuf_.empty()) continue;
         write_header(KSDR_KIND_AUDIO, KSDR_FMT_RI16, ch.pending_flags, ch.audio_index,
-                     a_.origin_hz + ch.cfg.offset_hz, 0, id, dsp::kAudioRateHz,
+                     center_hz_ + ch.cfg.offset_hz, 0, id, dsp::kAudioRateHz,
                      static_cast<uint32_t>(abuf_.size()), KSDR_AUDIO_HEADER_LEN);
         ksdr_audio_ext_v1 ext{};
         ext.channel_gen = ch.channel_gen;
@@ -224,7 +235,7 @@ uint32_t Worker::resolve_channel(const kctl_channel_v1& in, kctl_channel_v1& out
 
 std::unique_ptr<dsp::Channel> Worker::build_channel(const kctl_channel_v1& c) const {
     dsp::ChannelConfig cc;
-    cc.in_rate_hz = a_.rate_hz;
+    cc.in_rate_hz = rate_hz_;
     cc.offset_hz = c.offset_hz;
     to_dsp_mode(c.mode, cc.mode);
     dsp::AgcMode g = dsp::AgcMode::Medium;
@@ -323,11 +334,11 @@ void Worker::handle_channel(uint16_t type, uint64_t seq, const uint8_t* payload)
 }
 
 void Worker::build_frame_if_due(uint64_t now) {
-    if (held_ || !data_out_.empty() || eos_sent_ || stopping_) return;
-    const uint64_t n = src_.sample_count();
+    if (live_ != nullptr || held_ || !data_out_.empty() || eos_sent_ || stopping_) return;
+    const uint64_t n = replay_->sample_count();
     if (file_pos_ == n) {
         if (!a_.loop) {
-            append_frame(KSDR_KIND_END_OF_STREAM, 0, 0);
+            append_frame(KSDR_KIND_END_OF_STREAM, nullptr, 0);
             eos_sent_ = true;
             return;
         }
@@ -353,8 +364,94 @@ void Worker::build_frame_if_due(uint64_t now) {
         }
         next_disc_ = following;
     }
-    append_frame(KSDR_KIND_SAMPLES, file_pos_, count);
+    append_frame(KSDR_KIND_SAMPLES, replay_->at(file_pos_), count);
     file_pos_ += count;
+}
+
+// ------------------------------------------------------------------ live source
+
+// A loss of `samples` before the next frame. Staged samples precede it and go out first, so the
+// gap sits exactly at a frame boundary. GAP_KNOWN only while every pending gap is known.
+void Worker::mark_gap(uint64_t samples, uint32_t extra_flags) {
+    if (!staging_.empty()) emit_live(static_cast<uint32_t>(staging_.size()));
+    const bool unknown = (pending_flags_ & KSDR_F_DISCONTINUITY) && !(pending_flags_ & KSDR_F_GAP_KNOWN);
+    pending_flags_ |= KSDR_F_DISCONTINUITY | extra_flags;
+    if (!unknown) {
+        pending_flags_ |= KSDR_F_GAP_KNOWN;
+        pending_gap_ += samples;
+    }
+}
+
+void Worker::emit_live(uint32_t count) {
+    if (data_out_.pending() > kMaxDataBacklog) {
+        // The control service is not reading: drop this frame (and its DSP) rather than grow.
+        staging_.erase(staging_.begin(), staging_.begin() + count);
+        mark_gap(count, 0);
+        return;
+    }
+    append_frame(KSDR_KIND_SAMPLES, reinterpret_cast<const uint8_t*>(staging_.data()), count);
+    staging_.erase(staging_.begin(), staging_.begin() + count);
+}
+
+void Worker::live_block(const LiveBlock& b) {
+    if (stopping_ || eos_sent_) return;
+    if (b.epoch != epoch_) return;                    // captured before the latest retune
+    if (discard_blocks_ > 0) {                        // may still straddle the retune
+        --discard_blocks_;
+        return;
+    }
+    if (b.lost) mark_gap(b.lost, 0);                  // the worker fell behind the driver
+    if (b.dropped) mark_gap(b.dropped, KSDR_F_OVERFLOW);   // the driver/USB lost samples
+    staging_.insert(staging_.end(), b.samples, b.samples + b.count);
+    while (staging_.size() >= a_.frame_samples) emit_live(a_.frame_samples);
+}
+
+void Worker::drain_live() {
+    live_->clear_wake();
+    LiveBlock b;
+    while (live_->pop(b)) live_block(b);
+}
+
+bool Worker::live_healthy(uint64_t now) const {
+    if (!live_->streaming()) return false;
+    const uint64_t last = live_->last_block_ns();
+    return last == 0 || now <= last || now - last < kStallNs;
+}
+
+void Worker::handle_set_hw(uint64_t seq, const uint8_t* payload) {
+    kctl_set_hw_v1 r{};
+    std::memcpy(&r, payload, sizeof r);
+    kctl_ack_v1 ack{KCTL_OK, 0};
+    if (r.flags == 0 || (r.flags & ~KCTL_HW_DEFINED_MASK) || r.reserved != 0) ack.result = KCTL_E_BAD_MESSAGE;
+    else if (live_ == nullptr) ack.result = KCTL_E_UNSUPPORTED;
+    else if (((r.flags & KCTL_HW_AGC) && r.hf_agc > 1) || ((r.flags & KCTL_HW_AGC_THRESHOLD) && r.hf_agc_threshold > 1) ||
+             ((r.flags & KCTL_HW_LNA) && r.hf_lna > 1) || ((r.flags & KCTL_HW_ATT) && r.hf_att > KCTL_HW_ATT_MAX))
+        ack.result = KCTL_E_OUT_OF_RANGE;
+    send_ctl(KCTL_MSG_ACK, seq, &ack, sizeof ack);
+    if (ack.result != KCTL_OK) return;
+
+    HwSettings next = hw_;
+    if (r.flags & KCTL_HW_AGC) next.hf_agc = r.hf_agc;
+    if (r.flags & KCTL_HW_AGC_THRESHOLD) next.hf_agc_threshold = r.hf_agc_threshold;
+    if (r.flags & KCTL_HW_LNA) next.hf_lna = r.hf_lna;
+    if (r.flags & KCTL_HW_ATT) next.hf_att = r.hf_att;
+    if (!live_->set_hw(next)) {
+        // Device state is now unknown: report, then leave on the device-loss path (the control
+        // service restarts the worker, which sets every control again).
+        kctl_failed_v1 f{KCTL_E_DEVICE, 0};
+        send_ctl(KCTL_MSG_FAILED, seq, &f, sizeof f);
+        fatal_exit_ = kExitDeviceLost;
+        return;
+    }
+    hw_ = next;
+    kctl_hw_applied_v1 ap{};
+    ap.capture_gen = gen_;
+    ap.hf_agc = hw_.hf_agc;
+    ap.hf_agc_threshold = hw_.hf_agc_threshold;
+    ap.hf_lna = hw_.hf_lna;
+    ap.hf_att = hw_.hf_att;
+    ap.verified = 0;
+    send_ctl(KCTL_MSG_HW_APPLIED, seq, &ap, sizeof ap);
 }
 
 void Worker::send_ctl(uint16_t type, uint64_t seq, const void* payload, uint32_t len) {
@@ -381,17 +478,45 @@ void Worker::handle_set_capture(uint64_t seq, const uint8_t* payload) {
     kctl_set_capture_v1 sc{};
     std::memcpy(&sc, payload, sizeof sc);
     kctl_ack_v1 ack{};
+    const int64_t new_center = (sc.flags & KCTL_SC_CENTER) ? sc.center_hz : center_hz_;
+    const uint32_t new_rate = (sc.flags & KCTL_SC_RATE) ? sc.sample_rate_hz : rate_hz_;
     if (sc.flags == 0 || (sc.flags & ~KCTL_SC_DEFINED_MASK)) {
         ack.result = KCTL_E_BAD_MESSAGE;
-    } else if ((sc.flags & KCTL_SC_CENTER) && (is_real(a_.format) || sc.center_hz != a_.origin_hz)) {
+    } else if (live_ != nullptr) {
+        const auto& rates = live_->rates();
+        if (new_center <= 0 || new_center > static_cast<int64_t>(UINT32_MAX)) ack.result = KCTL_E_OUT_OF_RANGE;
+        else if (std::find(rates.begin(), rates.end(), new_rate) == rates.end()) ack.result = KCTL_E_UNSUPPORTED;
+        else ack.result = KCTL_OK;
+    } else if ((sc.flags & KCTL_SC_CENTER) && (is_real(a_.format) || sc.center_hz != center_hz_)) {
         ack.result = KCTL_E_UNSUPPORTED;
-    } else if ((sc.flags & KCTL_SC_RATE) && sc.sample_rate_hz != a_.rate_hz) {
+    } else if ((sc.flags & KCTL_SC_RATE) && sc.sample_rate_hz != rate_hz_) {
         ack.result = KCTL_E_UNSUPPORTED;
     } else {
         ack.result = KCTL_OK;
     }
     send_ctl(KCTL_MSG_ACK, seq, &ack, sizeof ack);
     if (ack.result != KCTL_OK) return;
+
+    if (live_ != nullptr) {
+        // A new tuning epoch first: every block captured before or during the change is
+        // discarded, plus the first kRetuneDiscardBlocks of the new epoch (the step lands up to
+        // about one block after the call, and the driver silently loses samples around it).
+        staging_.clear();
+        epoch_ = live_->new_epoch();
+        discard_blocks_ = kRetuneDiscardBlocks;
+        std::string err;
+        bool ok = new_rate == rate_hz_ || live_->set_rate(new_rate, err);
+        if (ok && (sc.flags & KCTL_SC_CENTER)) ok = live_->set_center(static_cast<uint32_t>(new_center));
+        if (!ok) {
+            std::fprintf(stderr, "ksdr-worker: retune failed: %s\n", err.empty() ? "driver refused" : err.c_str());
+            kctl_failed_v1 f{KCTL_E_DEVICE, 0};
+            send_ctl(KCTL_MSG_FAILED, seq, &f, sizeof f);
+            fatal_exit_ = kExitDeviceLost;   // device state unknown: restart from scratch
+            return;
+        }
+        center_hz_ = new_center;
+        rate_hz_ = new_rate;
+    }
 
     // Re-acquisition. Any frame already queued belongs to the old generation
     // and is flushed before frames of the new one.
@@ -403,8 +528,8 @@ void Worker::handle_set_capture(uint64_t seq, const uint8_t* payload) {
 
     kctl_applied_v1 ap{};
     ap.capture_gen = gen_;
-    ap.center_hz = a_.origin_hz;
-    ap.sample_rate_hz = a_.rate_hz;
+    ap.center_hz = center_hz_;
+    ap.sample_rate_hz = rate_hz_;
     ap.verified = 0;
     send_ctl(KCTL_MSG_APPLIED, seq, &ap, sizeof ap);
 }
@@ -420,6 +545,7 @@ bool Worker::handle_ctl_input() {
         uint32_t expect = 0;
         switch (h.msg_type) {
             case KCTL_MSG_SET_CAPTURE: expect = sizeof(kctl_set_capture_v1); break;
+            case KCTL_MSG_SET_HW: expect = sizeof(kctl_set_hw_v1); break;
             case KCTL_MSG_STOP:
             case KCTL_MSG_PING: expect = 0; break;
             case KCTL_MSG_CHANNEL_OPEN:
@@ -445,6 +571,8 @@ bool Worker::handle_ctl_input() {
             }
         } else if (h.msg_type == KCTL_MSG_SET_CAPTURE) {
             handle_set_capture(h.cmd_seq, payload);
+        } else if (h.msg_type == KCTL_MSG_SET_HW) {
+            handle_set_hw(h.cmd_seq, payload);
         } else if (h.msg_type == KCTL_MSG_CHANNEL_OPEN || h.msg_type == KCTL_MSG_CHANNEL_TUNE ||
                    h.msg_type == KCTL_MSG_CHANNEL_CLOSE) {
             handle_channel(h.msg_type, h.cmd_seq, payload);
@@ -452,13 +580,13 @@ bool Worker::handle_ctl_input() {
             kctl_ack_v1 ack{KCTL_OK, 0};
             send_ctl(KCTL_MSG_ACK, h.cmd_seq, &ack, sizeof ack);
             if (!eos_sent_) {
-                append_frame(KSDR_KIND_END_OF_STREAM, 0, 0);
+                append_frame(KSDR_KIND_END_OF_STREAM, nullptr, 0);
                 eos_sent_ = true;
             }
             kctl_applied_v1 ap{};
             ap.capture_gen = gen_;
-            ap.center_hz = a_.origin_hz;
-            ap.sample_rate_hz = a_.rate_hz;
+            ap.center_hz = center_hz_;
+            ap.sample_rate_hz = rate_hz_;
             ap.verified = 0;
             send_ctl(KCTL_MSG_APPLIED, h.cmd_seq, &ap, sizeof ap);
             stopping_ = true;
@@ -485,12 +613,26 @@ int Worker::run() {
     begin_generation();
     pending_flags_ = KSDR_F_NEW_GEN;
     reset_dsp_for_new_generation();
+    if (live_ != nullptr) {
+        epoch_ = live_->new_epoch();
+        discard_blocks_ = kRetuneDiscardBlocks;   // the first blocks after start also settle
+        std::string err;
+        if (!live_->start(err)) {
+            std::fprintf(stderr, "ksdr-worker: %s\n", err.c_str());
+            send_status(KCTL_STATE_FAILED, KCTL_E_DEVICE);
+            return finish(kExitDeviceLost);
+        }
+    }
     send_status(KCTL_STATE_RUNNING, KCTL_OK);
 
     for (;;) {
+        if (fatal_exit_) {
+            send_status(KCTL_STATE_FAILED, KCTL_E_DEVICE);
+            return finish(fatal_exit_);
+        }
         if (g_stop_signal) {
             if (!eos_sent_) {
-                append_frame(KSDR_KIND_END_OF_STREAM, 0, 0);
+                append_frame(KSDR_KIND_END_OF_STREAM, nullptr, 0);
                 eos_sent_ = true;
             }
             send_status(KCTL_STATE_STOPPING, KCTL_OK);
@@ -502,11 +644,13 @@ int Worker::run() {
         build_frame_if_due(now);
 
         int timeout_ms = -1;
-        if (!held_ && data_out_.empty() && !eos_sent_ && !stopping_) {
+        if (live_ != nullptr) {
+            timeout_ms = kLiveHealthPollMs;      // samples wake us through the source's fd
+        } else if (!held_ && data_out_.empty() && !eos_sent_ && !stopping_) {
             if (!a_.paced) {
                 timeout_ms = 0;
             } else {
-                const uint64_t n = src_.sample_count();
+                const uint64_t n = replay_->sample_count();
                 uint64_t remaining = file_pos_ < n ? n - file_pos_ : 0;
                 auto count = static_cast<uint32_t>(std::min<uint64_t>(a_.frame_samples, std::max<uint64_t>(remaining, 1)));
                 uint64_t dl = frame_deadline_ns(count);
@@ -514,11 +658,12 @@ int Worker::run() {
             }
         }
 
-        pollfd fds[2] = {
+        pollfd fds[3] = {
             {a_.ctl_fd, static_cast<short>(POLLIN | (ctl_out_.empty() ? 0 : POLLOUT)), 0},
             {a_.data_fd, static_cast<short>(data_out_.empty() ? 0 : POLLOUT), 0},
+            {live_ != nullptr ? live_->wake_fd() : -1, POLLIN, 0},
         };
-        int pr = ::poll(fds, 2, timeout_ms);
+        int pr = ::poll(fds, live_ != nullptr ? 3 : 2, timeout_ms);
         if (pr < 0) {
             if (errno == EINTR) continue;
             std::perror("ksdr-worker: poll");
@@ -536,6 +681,16 @@ int Worker::run() {
             if (r == InBuf::ReadResult::Eof) {
                 // Control service is gone: stop and release the device.
                 return kExitOk;
+            }
+        }
+        if (live_ != nullptr) {
+            drain_live();
+            if (!stopping_ && !live_healthy(now_ns())) {
+                // Unplugged or stalled. Report and leave; main() exits without stop/close (they
+                // hang after device loss) and the control service restarts the worker.
+                std::fprintf(stderr, "ksdr-worker: device stopped streaming\n");
+                send_status(KCTL_STATE_FAILED, KCTL_E_DEVICE);
+                return finish(kExitDeviceLost);
             }
         }
         if (!ctl_out_.empty() && !ctl_out_.flush(a_.ctl_fd)) return kExitIo;

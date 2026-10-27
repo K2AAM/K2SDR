@@ -9,7 +9,7 @@
  *   cmd_seq is assigned by the control service, strictly increasing per
  *   connection, never 0. The worker answers SET_CAPTURE and STOP with exactly
  *   one ACK, then (if accepted) exactly one APPLIED or FAILED with the same
- *   cmd_seq. PING is answered by exactly one PONG and no ACK. Commands are
+ *   cmd_seq; SET_HW likewise with HW_APPLIED, CHANNEL_* with CHANNEL_APPLIED. PING is answered by exactly one PONG and no ACK. Commands are
  *   processed strictly in order. A malformed message is a control-service
  *   bug: the worker reports STATUS FAILED/E_BAD_MESSAGE and exits.
  *
@@ -48,6 +48,7 @@ enum kctl_msg_type {
     KCTL_MSG_SET_CAPTURE = 0x0001,
     KCTL_MSG_STOP        = 0x0002, /* stop streaming and release the device; worker then exits */
     KCTL_MSG_PING        = 0x0003,
+    KCTL_MSG_SET_HW      = 0x0004, /* kctl_set_hw_v1: hardware gain controls (live sources only) */
     /* M1: listener channels (DSP in the worker). Answered by ACK, then CHANNEL_APPLIED or FAILED. */
     KCTL_MSG_CHANNEL_OPEN  = 0x0010, /* kctl_channel_v1; channel_id must not exist */
     KCTL_MSG_CHANNEL_TUNE  = 0x0011, /* kctl_channel_v1: the full desired config of an existing channel */
@@ -59,6 +60,7 @@ enum kctl_msg_type {
     KCTL_MSG_FAILED      = 0x0083,
     KCTL_MSG_PONG        = 0x0084,
     KCTL_MSG_CHANNEL_APPLIED = 0x0085, /* kctl_channel_applied_v1, answers CHANNEL_* */
+    KCTL_MSG_HW_APPLIED  = 0x0086, /* kctl_hw_applied_v1, answers SET_HW */
 
     /* worker -> control, unsolicited (cmd_seq = 0) */
     KCTL_MSG_STATUS      = 0x00C1
@@ -182,6 +184,44 @@ struct kctl_channel_applied_v1 {
     uint32_t open;                   /* 60 1 = open, 0 = closed by this command */
 };
 KCTL_STATIC_ASSERT(sizeof(struct kctl_channel_applied_v1) == 64, "channel applied payload must be 64 bytes");
+
+/*
+ * SET_HW (M1, Airspy HF+): hardware gain controls. flags selects the fields to change; the
+ * others keep their current values. ACK (E_UNSUPPORTED from sources without these controls,
+ * E_OUT_OF_RANGE for a bad value, E_BAD_MESSAGE for unknown flags/reserved), then HW_APPLIED
+ * with every control's value now in effect, or FAILED (E_DEVICE) if the driver refused.
+ * Gain changes do not start a new capture generation.
+ */
+enum kctl_set_hw_flags {
+    KCTL_HW_AGC           = 1u << 0, /* hf_agc: 0 off, 1 on */
+    KCTL_HW_AGC_THRESHOLD = 1u << 1, /* hf_agc_threshold: 0 low, 1 high (acts with AGC on) */
+    KCTL_HW_LNA           = 1u << 2, /* hf_lna: 0 off, 1 on */
+    KCTL_HW_ATT           = 1u << 3  /* hf_att: 0..8 attenuator index (acts with AGC off) */
+};
+#define KCTL_HW_DEFINED_MASK 0x0000000Fu
+#define KCTL_HW_ATT_MAX 8u
+
+struct kctl_set_hw_v1 {
+    uint32_t flags;            /*  0 enum kctl_set_hw_flags, at least one */
+    uint8_t  hf_agc;           /*  4 */
+    uint8_t  hf_agc_threshold; /*  5 */
+    uint8_t  hf_lna;           /*  6 */
+    uint8_t  hf_att;           /*  7 */
+    uint64_t reserved;         /*  8 must be 0 */
+};
+KCTL_STATIC_ASSERT(sizeof(struct kctl_set_hw_v1) == 16, "set_hw payload must be 16 bytes");
+
+/* HW_APPLIED: the values set in the device. libairspyhf has no getters, so verified is 0
+ * ("set and accepted by the driver"), never driver_readback. */
+struct kctl_hw_applied_v1 {
+    uint64_t capture_gen;      /*  0 */
+    uint8_t  hf_agc;           /*  8 */
+    uint8_t  hf_agc_threshold; /*  9 */
+    uint8_t  hf_lna;           /* 10 */
+    uint8_t  hf_att;           /* 11 */
+    uint32_t verified;         /* 12 0 = none */
+};
+KCTL_STATIC_ASSERT(sizeof(struct kctl_hw_applied_v1) == 16, "hw applied payload must be 16 bytes");
 
 struct kctl_status_v1 {
     uint32_t state;       /*  0 enum kctl_worker_state */

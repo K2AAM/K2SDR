@@ -50,16 +50,25 @@ repository at this time.
 | CMake | Debian 13 system package | BSD-3-Clause | https://cmake.org (worker build) |
 | Ninja | Debian 13 system package | Apache-2.0 | https://ninja-build.org (worker build) |
 
-The worker (`worker/`) links only the C/C++ standard libraries in M0; no SDR or DSP libraries yet.
+The worker (`worker/`) linked only the C/C++ standard libraries in M0. M1 adds the pinned liquid-dsp
+(statically, below) and, for the Airspy HF+ source, libairspyhf (dynamically).
 
-## M1 hardware measurement tools (Window 1)
+## M1 Airspy HF+ (worker source and Window 1 probe)
 
 | Component | Version | License | Source |
 | --- | --- | --- | --- |
-| libairspyhf | 1.6.8 (Debian 13 `libairspyhf-dev`/`libairspyhf1`; CI: Ubuntu 1.6.8-4build1) | BSD-3-Clause (library sources; the package's GPL-2.0 command-line tools are not used) | https://github.com/airspy/airspyhf — linked only by `ksdr-airspyhf-probe` |
+| libairspyhf | 1.6.8 (Debian 13 `libairspyhf-dev` 1.6.8-4+b2, as on the Optiplex; CI installs the same from `debian:trixie`) | BSD-3-Clause (library sources; the package's GPL-2.0 command-line tools are not used) | https://github.com/airspy/airspyhf — linked dynamically by `ksdr-worker` (`--source airspyhf`) and `ksdr-airspyhf-probe` |
+| libusb-1.0 | Debian 13 `libusb-1.0-0`, exact version: see below | LGPL-2.1-or-later | https://libusb.info — not linked by us; runtime dependency of libairspyhf (dynamic linking) |
+| libudev | Debian 13 `libudev1` (systemd), exact version: see below | LGPL-2.1-or-later | https://systemd.io — runtime dependency of libusb-1.0 (dynamic) |
+| libcap | Debian 13 `libcap2`, exact version: see below | BSD-3-Clause or GPL-2.0-only (dual) | https://sites.google.com/site/fullycapable — runtime dependency of libudev (dynamic) |
 | pkg-config | Debian 13 system package | GPL-2.0-or-later | build-time tool only (locates libairspyhf); not linked |
 
-`ksdr-airspyhf-probe-mock` (tests) compiles against the libairspyhf header but links our own `worker/probe/mock_airspyhf.c`, not the library.
+`ksdr-airspyhf-probe-mock` and `ksdr-worker-airspyhf-mock` (tests) compile against the libairspyhf header
+but link our own `worker/probe/mock_airspyhf.c`, not the library.
+
+Exact runtime versions: CI prints `dpkg-query -W` for both packages on `debian:trixie` in every run
+(step "Record toolchain"); `tools/check_dsp_deps.py` records the worker's `ldd` closure. PENDING: the
+Optiplex's own versions, from Adam (`dpkg-query -W libairspyhf1 libusb-1.0-0 libudev1 libcap2`).
 
 ## DSP (worker; M1)
 

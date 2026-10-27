@@ -17,6 +17,12 @@
  *   MOCK_UNPLUG_AT_S=<s>       stop streaming at this time (is_streaming -> 0)
  *   MOCK_RETUNE_LOSS=<n>       each set_freq while streaming silently skips n samples
  *                              (time advances, nothing delivered, nothing reported)
+ *   MOCK_STOP_HANG=1           after an unplug, airspyhf_stop/close never return (as measured
+ *                              in Window 1b, H7); MOCK_STOP_HANG=2: they never return at all
+ *   MOCK_STALL_AT_S=<s>        from this time, no more callbacks while is_streaming stays 1
+ *   MOCK_FAIL=<call>           that call returns AIRSPYHF_ERROR (e.g. set_hf_att, set_freq),
+ *   MOCK_FAIL_SKIP=<n>         ... except its first n calls (default 0)
+ *   MOCK_CALL_LOG=<path>       append one line per control call: "<call> <value>"
  * Test-only. Not part of any shipped binary.
  */
 #include <airspyhf.h>
@@ -25,6 +31,7 @@
 #include <stdatomic.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -62,6 +69,30 @@ static double env_d(const char* k, double def) {
     return v ? atof(v) : def;
 }
 
+static atomic_int g_fail_calls;
+
+static int mock_fail(const char* call) {
+    const char* f = getenv("MOCK_FAIL");
+    if (!f || strcmp(f, call) != 0) return 0;
+    return atomic_fetch_add(&g_fail_calls, 1) >= (int)env_d("MOCK_FAIL_SKIP", 0);
+}
+
+static void call_log(const char* call, long long value) {
+    const char* path = getenv("MOCK_CALL_LOG");
+    if (!path) return;
+    FILE* fp = fopen(path, "a");
+    if (!fp) return;
+    fprintf(fp, "%s %lld\n", call, value);
+    fclose(fp);
+}
+
+static atomic_int g_unplugged;
+
+static void maybe_hang(void) {
+    int mode = (int)env_d("MOCK_STOP_HANG", 0);
+    if (mode == 2 || (mode == 1 && g_unplugged)) for (;;) pause();
+}
+
 void ADDCALL airspyhf_lib_version(airspyhf_lib_version_t* v) {
     v->major_version = AIRSPYHF_VER_MAJOR;
     v->minor_version = AIRSPYHF_VER_MINOR;
@@ -87,8 +118,15 @@ int ADDCALL airspyhf_open_sn(airspyhf_device_t** device, uint64_t serial) {
     return AIRSPYHF_SUCCESS;
 }
 
+static void stop_thread(airspyhf_device_t* d) {
+    d->streaming = 0;
+    if (d->thread) { pthread_join(d->thread, NULL); d->thread = 0; }
+}
+
 int ADDCALL airspyhf_close(airspyhf_device_t* d) {
-    airspyhf_stop(d);   /* also joins a thread that already ended on simulated unplug */
+    call_log("close", 0);
+    maybe_hang();
+    stop_thread(d);   /* also joins a thread that already ended on simulated unplug */
     pthread_mutex_destroy(&d->mu);
     free(d);
     return AIRSPYHF_SUCCESS;
@@ -107,12 +145,16 @@ int ADDCALL airspyhf_get_samplerates(airspyhf_device_t* d, uint32_t* buffer, con
 }
 
 int ADDCALL airspyhf_set_samplerate(airspyhf_device_t* d, uint32_t rate) {
+    call_log("set_samplerate", rate);
+    if (mock_fail("set_samplerate")) return AIRSPYHF_ERROR;
     for (size_t i = 0; i < sizeof RATES / sizeof RATES[0]; i++)
         if (RATES[i] == rate) { d->rate = rate; return AIRSPYHF_SUCCESS; }
     return AIRSPYHF_ERROR;
 }
 
 int ADDCALL airspyhf_set_freq(airspyhf_device_t* d, const uint32_t f) {
+    call_log("set_freq", f);
+    if (mock_fail("set_freq")) return AIRSPYHF_ERROR;
     if (f < 9000 || f > 260000000) return AIRSPYHF_ERROR;
     pthread_mutex_lock(&d->mu);
     d->freq = f;
@@ -127,12 +169,30 @@ int ADDCALL airspyhf_set_freq(airspyhf_device_t* d, const uint32_t f) {
     return AIRSPYHF_SUCCESS;
 }
 
-int ADDCALL airspyhf_set_lib_dsp(airspyhf_device_t* d, const uint8_t f) { d->lib_dsp = f; return AIRSPYHF_SUCCESS; }
-int ADDCALL airspyhf_set_hf_agc(airspyhf_device_t* d, uint8_t f) { d->agc = f; return AIRSPYHF_SUCCESS; }
-int ADDCALL airspyhf_set_hf_agc_threshold(airspyhf_device_t* d, uint8_t f) { d->agc_thr = f; return AIRSPYHF_SUCCESS; }
-int ADDCALL airspyhf_set_hf_lna(airspyhf_device_t* d, uint8_t f) { d->lna = f; return AIRSPYHF_SUCCESS; }
+int ADDCALL airspyhf_set_lib_dsp(airspyhf_device_t* d, const uint8_t f) {
+    call_log("set_lib_dsp", f);
+    d->lib_dsp = f;
+    return AIRSPYHF_SUCCESS;
+}
+int ADDCALL airspyhf_set_hf_agc(airspyhf_device_t* d, uint8_t f) {
+    call_log("set_hf_agc", f);
+    if (mock_fail("set_hf_agc")) return AIRSPYHF_ERROR;
+    d->agc = f;
+    return AIRSPYHF_SUCCESS;
+}
+int ADDCALL airspyhf_set_hf_agc_threshold(airspyhf_device_t* d, uint8_t f) {
+    call_log("set_hf_agc_threshold", f);
+    d->agc_thr = f;
+    return AIRSPYHF_SUCCESS;
+}
+int ADDCALL airspyhf_set_hf_lna(airspyhf_device_t* d, uint8_t f) {
+    call_log("set_hf_lna", f);
+    d->lna = f;
+    return AIRSPYHF_SUCCESS;
+}
 int ADDCALL airspyhf_set_hf_att(airspyhf_device_t* d, uint8_t i) {
-    if (i > 8) return AIRSPYHF_ERROR;
+    call_log("set_hf_att", i);
+    if (i > 8 || mock_fail("set_hf_att")) return AIRSPYHF_ERROR;
     d->att = i;
     return AIRSPYHF_SUCCESS;
 }
@@ -156,6 +216,7 @@ static void* stream_thread(void* arg) {
     airspyhf_complex_float_t buf[BLOCK];
     double tone1 = env_d("MOCK_TONE_HZ", 10005000), tone2 = env_d("MOCK_TONE2_HZ", 15005000);
     double drop_at = env_d("MOCK_DROP_AT_S", -1), unplug_at = env_d("MOCK_UNPLUG_AT_S", -1);
+    double stall_at = env_d("MOCK_STALL_AT_S", -1);
     uint64_t drops[32];
     int ndrops = 0, next_drop = 0;
     const char* pat = getenv("MOCK_DROP_PATTERN");
@@ -182,7 +243,8 @@ static void* stream_thread(void* arg) {
         double t = (double)n / d->rate;
         double wait = t0 + t + (double)BLOCK / d->rate - now_s();
         if (wait > 0) usleep((useconds_t)(wait * 1e6));
-        if (unplug_at > 0 && t >= unplug_at) { d->streaming = 0; break; }
+        if (unplug_at > 0 && t >= unplug_at) { g_unplugged = 1; d->streaming = 0; break; }
+        if (stall_at > 0 && t >= stall_at) { while (d->streaming) usleep(10000); break; }
         uint64_t lost = 0;
         if (drop_at > 0 && t >= drop_at && next_drop < ndrops) { lost = drops[next_drop++]; n += lost; }
         pthread_mutex_lock(&d->mu);
@@ -215,6 +277,7 @@ static void* stream_thread(void* arg) {
 }
 
 int ADDCALL airspyhf_start(airspyhf_device_t* d, airspyhf_sample_block_cb_fn cb, void* ctx) {
+    call_log("start", 0);
     d->cb = cb;
     d->ctx = ctx;
     d->streaming = 1;
@@ -222,7 +285,8 @@ int ADDCALL airspyhf_start(airspyhf_device_t* d, airspyhf_sample_block_cb_fn cb,
 }
 
 int ADDCALL airspyhf_stop(airspyhf_device_t* d) {
-    d->streaming = 0;
-    if (d->thread) { pthread_join(d->thread, NULL); d->thread = 0; }
+    call_log("stop", 0);
+    maybe_hang();
+    stop_thread(d);
     return AIRSPYHF_SUCCESS;
 }

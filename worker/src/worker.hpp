@@ -27,6 +27,17 @@
 //   AUDIO frame DISCONTINUITY.
 // - --start-after-ping: no frames (and no pacing clock) until the first PING is answered; the
 //   control service opens channels first, so where audio starts is deterministic.
+//
+// M1 live source (--source airspyhf; docs/protocol/worker-live-v1.md):
+// - SAMPLES are CF32 blocks of --frame-samples, first_sample_index counting delivered samples.
+// - SET_CAPTURE retunes (centre) or stops/sets/starts (rate): a new tuning epoch is started
+//   before the driver call, every block of an older epoch and the first kRetuneDiscardBlocks of
+//   the new one are discarded, then capture_gen increments (NEW_GEN | DISCONTINUITY).
+// - Driver drops: DISCONTINUITY | GAP_KNOWN | OVERFLOW; worker-side loss (ring full or the data
+//   socket backlogged): DISCONTINUITY | GAP_KNOWN. The gap always sits at a frame boundary.
+// - SET_HW sets every gain control (no new generation). Device loss (not streaming, or no block
+//   for 1 s) and driver errors on SET_CAPTURE/SET_HW: STATUS FAILED/E_DEVICE, exit 69 without
+//   calling stop/close.
 #pragma once
 
 #include <cstdint>
@@ -39,6 +50,7 @@
 #include "dsp/channel.hpp"
 #include "dsp/spectrum.hpp"
 #include "io.hpp"
+#include "live_source.hpp"
 #include "replay_source.hpp"
 #include "worker_ctl_v1.h"
 
@@ -50,7 +62,9 @@ enum ExitCode : int {
     kExitUsage = 64,
     kExitBadMessage = 65,  // control sent a malformed message
     kExitNoInput = 66,     // replay file unusable
+    kExitDeviceLost = 69,  // live device stopped streaming or went silent (EX_UNAVAILABLE)
     kExitInternal = 70,
+    kExitStopHung = 71,    // normal stop/close did not return within the watchdog (EX_OSERR)
     kExitLockError = 73,
     kExitIo = 74,          // data or control socket failed
     kExitBusy = 75,        // device lock held by another process
@@ -58,7 +72,8 @@ enum ExitCode : int {
 
 class Worker {
 public:
-    Worker(const Args& args, ReplaySource& src);
+    // Exactly one of replay/live is non-null.
+    Worker(const Args& args, ReplaySource* replay, LiveSource* live);
     ~Worker();
     int run();  // returns an ExitCode
 
@@ -72,10 +87,17 @@ private:
     };
 
     void build_frame_if_due(uint64_t now_ns);
-    void append_frame(uint16_t kind, uint64_t start, uint32_t count);
+    void append_frame(uint16_t kind, const uint8_t* data, uint32_t count);
     void write_header(uint16_t kind, uint16_t format, uint32_t flags, uint64_t first_index, int64_t origin,
                       uint64_t gap, uint32_t stream_id, uint32_t rate, uint32_t count, uint16_t header_len);
-    void process_dsp(uint64_t start, uint32_t count, uint32_t block_flags);
+    void process_dsp(const uint8_t* data, uint32_t count, uint32_t block_flags);
+    // Live source
+    void drain_live();
+    void live_block(const LiveBlock& b);
+    void emit_live(uint32_t count);           // staged samples [0, count) -> one SAMPLES frame
+    void mark_gap(uint64_t samples, uint32_t extra_flags);
+    bool live_healthy(uint64_t now_ns) const;
+    void handle_set_hw(uint64_t seq, const uint8_t* payload);
     void reset_dsp_for_new_generation();
     void handle_channel(uint16_t type, uint64_t seq, const uint8_t* payload);
     uint32_t resolve_channel(const kctl_channel_v1& in, kctl_channel_v1& out) const;
@@ -90,11 +112,19 @@ private:
     int finish(int code);             // flush best-effort, return code
 
     const Args& a_;
-    ReplaySource& src_;
+    ReplaySource* replay_;
+    LiveSource* live_;
     OutBuf ctl_out_, data_out_;
     InBuf ctl_in_;
 
     uint64_t gen_;
+    int64_t center_hz_;               // capture centre now in effect (replay: the recording's origin)
+    uint32_t rate_hz_;
+    HwSettings hw_;                   // live: controls now set in the device
+    uint32_t epoch_ = 0;              // live: tuning epoch whose blocks are current
+    uint32_t discard_blocks_ = 0;     // live: blocks of the current epoch still to discard
+    std::vector<dsp::cf> staging_;    // live: samples not yet framed
+    int fatal_exit_ = 0;              // set when the device state is unknown: leave on the loss path
     uint64_t seq_ = 0;                // frame counter, never resets
     uint64_t file_pos_ = 0;           // next file sample to send
     uint64_t delivered_in_gen_ = 0;   // first_sample_index of the next frame

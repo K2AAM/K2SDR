@@ -1,18 +1,25 @@
-// ksdr-worker — K2AAM WebSDR acquisition worker (M0: replay only).
+// ksdr-worker — K2AAM WebSDR acquisition worker: replay (M0) or Airspy HF+ (M1).
 //
 // Started by the control service with two already-connected Unix sockets
 // (control and data). Takes the per-device lock first, then opens the source.
 // Exits when told to STOP, on SIGTERM/SIGINT, when the control socket closes,
 // or when the parent process dies.
+//
+// Live device exit paths (Window 1b, H7): after device loss libairspyhf's stop/close hang, so
+// that path leaves with _exit() without calling them (the OS releases USB with the process).
+// The normal path calls them under a watchdog that forces the exit if they do not return.
 
 #include <signal.h>
 #include <csignal>
 #include <sys/prctl.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
+#include <thread>
 
 #include "args.hpp"
 #include "liquid_pin.hpp"
@@ -22,6 +29,9 @@
 #include "replay_source.hpp"
 #include "worker.hpp"
 #include "worker_ctl_v1.h"
+#ifdef K2_HAVE_AIRSPYHF
+#include "airspyhf_source.hpp"
+#endif
 
 namespace k2 {
 extern volatile std::sig_atomic_t g_stop_signal;
@@ -102,6 +112,43 @@ int main(int argc, char** argv) {
             return k2::kExitLockError;
     }
 
+#ifdef K2_HAVE_AIRSPYHF
+    if (a.source == "airspyhf") {
+        // Owned for the rest of the process: on the loss path it is deliberately never destroyed.
+        auto* live = new k2::AirspyhfSource();
+        k2::HwSettings hw;
+        hw.hf_agc = a.hf_agc;
+        hw.hf_agc_threshold = a.hf_agc_threshold;
+        hw.hf_lna = a.hf_lna;
+        hw.hf_att = a.hf_att;
+        const uint32_t r = live->open(a.serial, a.rate_hz, static_cast<uint32_t>(a.origin_hz), hw, err);
+        if (r != KCTL_OK) {
+            std::fprintf(stderr, "ksdr-worker: airspyhf: %s\n", err.c_str());
+            report_failure(a.ctl_fd, r);
+            live->abandon();   // a half-open handle may be the hanging kind too
+            ::_exit(r == KCTL_E_BUSY ? k2::kExitBusy : r == KCTL_E_UNSUPPORTED ? k2::kExitUsage : k2::kExitDeviceLost);
+        }
+        int code;
+        {
+            k2::Worker w(a, nullptr, live);
+            code = w.run();
+        }
+        if (code == k2::kExitDeviceLost) {
+            live->abandon();
+            std::fflush(nullptr);
+            ::_exit(code);
+        }
+        std::thread([] {
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+            std::fprintf(stderr, "ksdr-worker: airspyhf stop/close did not return; exiting\n");
+            ::_exit(k2::kExitStopHung);
+        }).detach();
+        live->stop_and_close();
+        delete live;
+        return code;
+    }
+#endif
+
     k2::ReplaySource src;
     if (!src.open(a.file, ksdr_bytes_per_sample(a.format), err)) {
         std::fprintf(stderr, "ksdr-worker: replay: %s\n", err.c_str());
@@ -118,6 +165,6 @@ int main(int argc, char** argv) {
         }
     }
 
-    k2::Worker w(a, src);
+    k2::Worker w(a, &src, nullptr);
     return w.run();
 }

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 project(k2websdr_worker LANGUAGES C CXX)
 
-# Acquisition worker. M0: replay source only; no hardware drivers are linked.
+# Acquisition worker: replay (M0) and, when libairspyhf is installed, the Airspy HF+ source (M1).
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,6 +26,31 @@ set_target_properties(k2_liquid PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "${K2_LIQUID_PREFIX}/include"       # imported => -isystem, ahead of /usr/include
   INTERFACE_LINK_LIBRARIES m)
 
+# libairspyhf (M1 live source + Window 1 probe). Built with it when installed (Debian:
+# libairspyhf-dev); K2_REQUIRE_AIRSPYHF=ON makes it mandatory (CI, the Optiplex).
+option(K2_REQUIRE_AIRSPYHF "Fail the configure step if libairspyhf is missing" OFF)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(AIRSPYHF libairspyhf)
+endif()
+if(AIRSPYHF_FOUND)
+  find_package(Threads REQUIRED)
+  # Debian's libairspyhf.pc adds -I/usr/include/libusb-1.0 without depending on
+  # libusb-1.0-0-dev; airspyhf.h needs only <stdint.h>, so drop paths that do not exist.
+  set(K2_AIRSPYHF_INCLUDES "")
+  foreach(dir IN LISTS AIRSPYHF_INCLUDE_DIRS)
+    if(EXISTS "${dir}")
+      list(APPEND K2_AIRSPYHF_INCLUDES "${dir}")
+    endif()
+  endforeach()
+  message(STATUS "libairspyhf ${AIRSPYHF_VERSION}: ksdr-worker gets --source airspyhf; building the probe")
+elseif(K2_REQUIRE_AIRSPYHF)
+  message(FATAL_ERROR "libairspyhf not found (install libairspyhf-dev)")
+else()
+  message(STATUS "libairspyhf not found: ksdr-worker is replay-only; skipping the probe")
+endif()
+
+set(K2_WORKER_SOURCES src/main.cpp src/args.cpp src/device_lock.cpp src/io.cpp src/replay_source.cpp src/worker.cpp)
 add_executable(ksdr-worker
   src/main.cpp
   src/args.cpp
@@ -39,6 +64,24 @@ target_compile_options(ksdr-worker PRIVATE -Wall -Wextra -Wpedantic -Wconversion
 target_link_libraries(ksdr-worker PRIVATE k2dsp k2_liquid)
 # Link map: every input file the linker used (archives and members), checked by tools/check_dsp_deps.py.
 target_link_options(ksdr-worker PRIVATE "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/ksdr-worker.map")
+if(AIRSPYHF_FOUND)
+  target_sources(ksdr-worker PRIVATE src/airspyhf_source.cpp)
+  target_compile_definitions(ksdr-worker PRIVATE K2_HAVE_AIRSPYHF)
+  target_include_directories(ksdr-worker PRIVATE ${K2_AIRSPYHF_INCLUDES})
+  target_link_libraries(ksdr-worker PRIVATE ${AIRSPYHF_LINK_LIBRARIES} Threads::Threads)
+  # Test-only twin: the same worker linked against our mock libairspyhf (synthetic device,
+  # scripted faults), so the live path is tested without hardware. Never shipped.
+  add_executable(ksdr-worker-airspyhf-mock ${K2_WORKER_SOURCES} src/airspyhf_source.cpp probe/mock_airspyhf.c)
+  target_compile_definitions(ksdr-worker-airspyhf-mock PRIVATE K2_HAVE_AIRSPYHF)
+  target_include_directories(ksdr-worker-airspyhf-mock PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/../protocol
+                             ${K2_AIRSPYHF_INCLUDES})
+  target_compile_options(ksdr-worker-airspyhf-mock PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror>)
+  target_link_libraries(ksdr-worker-airspyhf-mock PRIVATE k2dsp k2_liquid Threads::Threads m)
+  if(K2_SANITIZE)
+    target_compile_options(ksdr-worker-airspyhf-mock PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    target_link_options(ksdr-worker-airspyhf-mock PRIVATE -fsanitize=address,undefined)
+  endif()
+endif()
 
 # Worker DSP (M1 §3.2): spectrum, channels, AGC. Same strict warnings as the worker.
 add_library(k2dsp STATIC src/dsp/convert.cpp src/dsp/agc.cpp src/dsp/spectrum.cpp src/dsp/channel.cpp)
@@ -69,35 +112,14 @@ if(K2_SANITIZE)
 endif()
 
 # ---------------------------------------------------------------------------
-# Airspy HF+ measurement probe (M1 Window 1). Built only when libairspyhf is
-# installed (Debian: libairspyhf-dev). K2_REQUIRE_AIRSPYHF=ON makes it mandatory (CI).
-option(K2_REQUIRE_AIRSPYHF "Fail the configure step if libairspyhf is missing" OFF)
-find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
-  pkg_check_modules(AIRSPYHF libairspyhf)
-endif()
+# Airspy HF+ measurement probe (M1 Window 1), and its mock twin for tests.
 if(AIRSPYHF_FOUND)
-  find_package(Threads REQUIRED)
-  # Debian's libairspyhf.pc adds -I/usr/include/libusb-1.0 without depending on
-  # libusb-1.0-0-dev; airspyhf.h needs only <stdint.h>, so drop paths that do not exist.
-  set(K2_AIRSPYHF_INCLUDES "")
-  foreach(dir IN LISTS AIRSPYHF_INCLUDE_DIRS)
-    if(EXISTS "${dir}")
-      list(APPEND K2_AIRSPYHF_INCLUDES "${dir}")
-    endif()
-  endforeach()
   add_executable(ksdr-airspyhf-probe probe/airspyhf_probe.cpp)
   target_include_directories(ksdr-airspyhf-probe PRIVATE ${K2_AIRSPYHF_INCLUDES})
   target_link_libraries(ksdr-airspyhf-probe PRIVATE ${AIRSPYHF_LINK_LIBRARIES} Threads::Threads)
   target_compile_options(ksdr-airspyhf-probe PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Werror)
-  message(STATUS "libairspyhf ${AIRSPYHF_VERSION}: building ksdr-airspyhf-probe")
-  # Test-only twin linked against a mock library (synthetic signal, scripted faults).
   add_executable(ksdr-airspyhf-probe-mock probe/airspyhf_probe.cpp probe/mock_airspyhf.c)
   target_include_directories(ksdr-airspyhf-probe-mock PRIVATE ${K2_AIRSPYHF_INCLUDES})
   target_link_libraries(ksdr-airspyhf-probe-mock PRIVATE Threads::Threads m)
   target_compile_options(ksdr-airspyhf-probe-mock PRIVATE -Wall -Wextra -Werror)
-elseif(K2_REQUIRE_AIRSPYHF)
-  message(FATAL_ERROR "libairspyhf not found (install libairspyhf-dev)")
-else()
-  message(STATUS "libairspyhf not found: skipping ksdr-airspyhf-probe")
 endif()
