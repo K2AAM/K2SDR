@@ -73,10 +73,15 @@ make schema          # after changing k2websdr.protocol.models
 make fixtures        # after changing fixtures/gen/make_synthetic.py
 make ledger          # regenerate ledger/modes.v1.json from the outline appendix
 make run-dev         # service on 127.0.0.1:8075 with replay receivers (docs/ops/first-run.md)
+make liquid          # fetch + verify + build pinned liquid-dsp 1.8.3 (no FFTW) into build/third_party
+make dsp-deps        # prove no FFTW / only the pinned liquid-dsp in the worker
+make dsp-bench       # DSP benchmark on this machine
 ```
 
-Build prerequisites: `build-essential`, `cmake`, `ninja-build`, `python3` (3.13), `uv`.
-`make worker` builds `build/worker/ksdr-worker`; `make test` builds it first.
+Build prerequisites: `build-essential`, `cmake`, `ninja-build`, `git`, `python3` (3.13), `uv`.
+`make worker` builds `build/worker/ksdr-worker` (and liquid-dsp first if missing; the first
+build fetches it from GitHub); `make test` builds it first. Never link Debian's `libliquid`
+(it pulls in FFTW, GPL): only the project-built archive, checked by `make dsp-deps`.
 
 ## Milestone 0 acceptance (A1–A14)
 

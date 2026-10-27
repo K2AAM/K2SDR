@@ -15,6 +15,7 @@
 #include <string>
 
 #include "args.hpp"
+#include "liquid_pin.hpp"
 #include "device_lock.hpp"
 #include "frame_v1.h"
 #include "io.hpp"
@@ -52,6 +53,12 @@ void report_failure(int ctl_fd, uint32_t result) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
+        // liquid-dsp is linked statically from the pinned, project-built archive.
+        std::printf("ksdr-worker frame_v%u worker_ctl_v%u liquid-dsp %s\n", static_cast<unsigned>(KSDR_FRAME_VERSION),
+                    static_cast<unsigned>(KCTL_VERSION), liquid_libversion());
+        return std::strcmp(liquid_libversion(), k2::kLiquidPinnedVersion) == 0 ? 0 : k2::kExitInternal;
+    }
     // Die with the control service: never leave an orphan holding a device.
     if (::prctl(PR_SET_PDEATHSIG, SIGTERM) != 0) {
         std::perror("ksdr-worker: prctl");

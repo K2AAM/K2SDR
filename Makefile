@@ -3,9 +3,12 @@ UV      ?= uv
 PY      := $(UV) run --project control --frozen
 SCHEMA  := protocol/schema/control-v1.json
 
-.PHONY: help sync worker worker-san probe test test-a1 test-worker-san schema schema-check fixtures fixtures-check ledger ledger-check run-dev check
+.PHONY: help sync liquid dsp-deps dsp-bench worker worker-san probe test test-a1 test-worker-san schema schema-check fixtures fixtures-check ledger ledger-check run-dev check
 help:
 	@echo "make sync          install pinned dev environment (control/uv.lock)"
+	@echo "make liquid        fetch (pinned, verified) and build liquid-dsp into build/third_party (no FFTW)"
+	@echo "make dsp-deps      prove the worker and liquid-dsp contain no FFTW and use the pinned build"
+	@echo "make dsp-bench     benchmark M1 FFT sizes and channel chains on this machine"
 	@echo "make worker        build the C++ worker (build/worker/ksdr-worker)"
 	@echo "make probe         build the Airspy HF+ probe (needs libairspyhf-dev, pkg-config)"
 	@echo "make test-worker-san  worker tests against an ASan/UBSan build"
@@ -22,17 +25,31 @@ help:
 sync:
 	$(UV) sync --project control --frozen
 
-worker:
+LIQUID := build/third_party/liquid-dsp/lib/libliquid.a
+
+liquid:
+	tools/build_liquid.sh
+
+$(LIQUID):
+	tools/build_liquid.sh
+
+worker: $(LIQUID)
 	cmake -S worker -B build/worker -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 	cmake --build build/worker
 
-probe:
+probe: $(LIQUID)
 	cmake -S worker -B build/worker -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DK2_REQUIRE_AIRSPYHF=ON
 	cmake --build build/worker
 
-worker-san:
+worker-san: $(LIQUID)
 	cmake -S worker -B build/worker-san -G Ninja -DK2_SANITIZE=ON
 	cmake --build build/worker-san
+
+dsp-deps: worker
+	python3 tools/check_dsp_deps.py build/worker build/third_party/liquid-dsp
+
+dsp-bench: worker
+	build/worker/ksdr-dsp-check bench
 
 test: worker
 	$(PY) pytest control/tests

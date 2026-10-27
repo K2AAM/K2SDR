@@ -21,6 +21,7 @@ jobs:
     env:
       UV_PYTHON_DOWNLOADS: never
       K2_REQUIRE_PROBE: "1"   # the Airspy probe and its mock must build and be tested
+      K2_EXPECT_FFTW_INSTALLED: "1"   # dependency check must see FFTW + Debian liquid present and still pass
       UV_VERSION: "0.11.32"
     steps:
       - name: Install build prerequisites
@@ -28,7 +29,8 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build make git ca-certificates python3 python3-venv \
-            pkg-config libairspyhf-dev
+            pkg-config libairspyhf-dev \
+            libfftw3-dev libliquid-dev   # installed on purpose: the build must still exclude both
       - uses: actions/checkout@v4
       - name: Install pinned uv
         run: |
@@ -45,10 +47,25 @@ jobs:
           set -o pipefail
           pkg-config --modversion libairspyhf
           make probe 2>&1 | tee check.log
+      - name: liquid-dsp dependency closure (FFTW and Debian liquid-dsp installed)
+        run: |
+          set -o pipefail
+          python3 tools/check_dsp_deps.py build/worker build/third_party/liquid-dsp \
+            --expect-fftw-installed --expect-debian-liquid 2>&1 | tee -a check.log
       - name: make check
         run: |
           set -o pipefail
           PYTEST_ADDOPTS="-rfE --tb=short" make check 2>&1 | tee -a check.log
+      - name: DSP benchmark (recorded, not gated)
+        run: |
+          build/worker/ksdr-dsp-check bench --seconds 4 > bench.jsonl
+          python3 - <<'PY'
+          import json
+          rows = [json.loads(x) for x in open("bench.jsonl")]
+          fft = [f"n={e['n']} {e['frame_us']:.0f}us" for e in rows if e["event"] == "bench_fft" and e["rate_hz"] == 384000]
+          ch = [f"{e['mode']}@{e['rate_hz']//1000}k {e['cpu_pct_per_channel']:.1f}%" for e in rows if e["event"] == "bench_chain"]
+          print("::notice title=DSP bench (CI runner)::" + "; ".join(fft) + " | " + "; ".join(ch))
+          PY
       - name: Report failing tests as an annotation
         if: failure()
         run: |
