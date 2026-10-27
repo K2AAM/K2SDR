@@ -8,8 +8,10 @@ call and, separately, after it (skipping --guard-s either side). If the device d
 every sample, both lines describe the same clock and meet at the call time; a gap of
 L samples shows up as the after-line sitting L samples below the before-line.
 
-USB buffering jitter (a few ms per callback) averages out over hundreds of callbacks, so
-the offset is good to a small fraction of a block. Also reports the library's own drop
+Callbacks can arrive late (scheduling stalls, USB bursts) but never early, so a few late ones
+are outliers that would drag a least-squares line. The fit is therefore robust: Theil-Sen
+slope (median of pairwise slopes) and median intercept per side. Least-squares results are
+reported alongside (`lost_samples_lstsq`) for comparison. Also reports the library's own drop
 count over the same span, the fitted rates (sanity check against nominal), and the
 largest callback gap across the retune.
 """
@@ -42,6 +44,22 @@ def fit(t_s: np.ndarray, n: np.ndarray) -> tuple[float, float, float]:
     return float(a), float(b), float(np.std(n - (a + b * t_s)))
 
 
+def robust_fit(t_s: np.ndarray, n: np.ndarray) -> tuple[float, float, float]:
+    """Theil-Sen n = a + b t: median pairwise slope, median intercept.
+
+    Returns (a, b, sigma) with sigma = 1.4826 * MAD of the residuals (robust std, samples).
+    Tolerates up to ~29 % outliers; late callbacks are a few percent.
+    """
+    i, j = np.triu_indices(len(t_s), k=1)
+    dt = t_s[j] - t_s[i]
+    ok = dt > 1e-6
+    b = float(np.median((n[j][ok] - n[i][ok]) / dt[ok]))
+    res = n - b * t_s
+    a = float(np.median(res))
+    sigma = 1.4826 * float(np.median(np.abs(res - a)))
+    return a, b, sigma
+
+
 def analyse(cbs: np.ndarray, retunes: list[dict], rate: int, before_s: float, after_s: float,
             guard_s: float) -> list[dict]:
     t = cbs[:, 0].astype(np.float64) / 1e9
@@ -60,11 +78,13 @@ def analyse(cbs: np.ndarray, retunes: list[dict], rate: int, before_s: float, af
         if b.sum() < 20 or a.sum() < 20:
             out.append({**rec, "error": "not enough callbacks either side"})
             continue
-        ab, bb, sb = fit(t[b] - tc, total[b])
-        aa, ba, sa = fit(t[a] - tc, total[a])
+        ab, bb, sb = robust_fit(t[b] - tc, total[b])
+        aa, ba, sa = robust_fit(t[a] - tc, total[a])
         # Both intercepts are "samples delivered by time tc"; the slopes must agree with each other.
         lost = ab - aa
-        se = (sb / np.sqrt(b.sum()) + sa / np.sqrt(a.sum()))
+        se = 1.2533 * (sb / np.sqrt(b.sum()) + sa / np.sqrt(a.sum()))   # median: 1.2533 x mean's s.e.
+        lsq_lost = fit(t[b] - tc, total[b])[0] - fit(t[a] - tc, total[a])[0]
+        late = np.concatenate([total[m] - (ic + sl * (t[m] - tc)) for m, ic, sl in ((b, ab, bb), (a, aa, ba))])
         span = (t >= tc - guard_s) & (t <= tc + guard_s)
         idx = np.flatnonzero(span)
         gaps = np.diff(t[max(idx[0] - 1, 0):idx[-1] + 2]) if len(idx) else np.array([0.0])
@@ -72,6 +92,8 @@ def analyse(cbs: np.ndarray, retunes: list[dict], rate: int, before_s: float, af
             "lost_samples": round(lost, 1),
             "lost_ms": round(lost / rate * 1000, 3),
             "stderr_samples": round(se, 1),
+            "lost_samples_lstsq": round(lsq_lost, 1),
+            "max_late_ms": round(float(max(0.0, -late.min())) / rate * 1000, 2),   # worst late callback
             "rate_before_hz": round(bb, 1), "rate_after_hz": round(ba, 1),
             "library_dropped_in_span": int(dropped[(t >= lo) & (t <= hi)].sum()),
             "max_callback_gap_ms": round(float(gaps.max()) * 1000, 2),
