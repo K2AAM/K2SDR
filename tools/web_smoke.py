@@ -4,20 +4,18 @@
     python3 tools/web_smoke.py [--screenshot out.png]     # needs `pip install playwright` + Chromium
 
 Starts k2websdr-server (from control/.venv) on 127.0.0.1:8095 with a temporary state dir, the
-built UI (make web) and a replayed real WWV clip; completes first-run setup and signs in over
-HTTP; then opens /app/ in headless Chromium and checks that it connects, shows the receiver, and
+built UI (make web) and a replayed real WWV clip; then, in headless Chromium, completes first-run setup and signs in through
+the real forms, opens /app/ and checks that it connects, shows the receiver, and
 logs no console errors or CSP violations. Exit 0 on success.
 """
 
 from __future__ import annotations
 
 import argparse
-import http.cookiejar
 import subprocess
 import sys
 import tempfile
 import time
-import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -121,16 +119,8 @@ recording = "{ROOT}/fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta"
                 time.sleep(0.1)
         else:
             raise SystemExit("server did not start")
-        jar = http.cookiejar.CookieJar()
-        op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-        hdr = {"Origin": BASE}
         token = (tmp / "state/setup-token").read_text().strip()
         pw = "correct horse battery staple"
-        for path, form in (("/setup", {"token": token, "username": "adam", "password": pw}),
-                           ("/login", {"username": "adam", "password": pw})):
-            req = urllib.request.Request(BASE + path, data=urllib.parse.urlencode(form).encode(), headers=hdr)
-            op.open(req)
-        cookie = next(c for c in jar if c.name == "k2_session")
 
         problems: list[str] = []
         with sync_playwright() as p:
@@ -138,12 +128,21 @@ recording = "{ROOT}/fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta"
             ctx = (browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=3, is_mobile=True,
                                        has_touch=True) if a.mobile
                    else browser.new_context(viewport={"width": 1280, "height": 800}))
-            ctx.add_cookies([{"name": cookie.name, "value": cookie.value, "url": BASE}])
             page = ctx.new_page()
             page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text}")
                     if m.type in ("error", "warning") else None)
             page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
+            # Setup and sign-in through the real forms: a browser, not a script, sets the Origin header.
             page.goto(BASE + "/")
+            page.wait_for_url(BASE + "/setup")
+            page.fill("input[name=token]", token)
+            page.fill("input[name=username]", "adam")
+            page.fill("input[name=password]", pw)
+            page.click("button[type=submit]")
+            page.wait_for_url(BASE + "/login")
+            page.fill("input[name=username]", "adam")
+            page.fill("input[name=password]", pw)
+            page.click("button[type=submit]")
             page.wait_for_url(BASE + "/app/")
             page.locator("select[aria-label=Receiver] option", has_text="Replay: WWV 10 MHz").wait_for(
                 state="attached", timeout=a.timeout * 1000)
