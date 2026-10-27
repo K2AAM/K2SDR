@@ -35,19 +35,40 @@ def lowpass(num_taps: int, cutoff: float) -> np.ndarray:
     return (h / h.sum()).astype(np.float64)
 
 
+class UnknownTime(Exception):
+    """The clip's start time cannot be stated: an unknown-length gap lies between anchor and clip."""
+
+
 def clip_datetime(meta: dict, seg: tuple[int, int, int], start: int, rate: int) -> str:
-    """UTC time of the clip's first sample: its capture's datetime plus the offset into that capture.
+    """UTC time of the clip's first sample.
+
+    Anchor: the datetime of the capture that contains the clip (each capture carries its own
+    wall-clock stamp, so gaps before that capture are already in it and are not counted again).
+    Elapsed time = stored samples from the capture start to the clip start, plus every known
+    lost-sample count annotated after the capture start and at or before the clip start (a gap
+    at exactly the clip start lies before its first sample). An annotated gap of unknown length
+    in that span raises UnknownTime: the time is not guessed.
 
     The probe stamps a capture when it calls airspyhf_start/set_freq; Window 1 measured the first
-    sample arriving ~85 ms after the start call, so this is good to about 0.1 s.
+    sample arriving ~85 ms after the start call and ~1490 samples silently lost per retune
+    (not annotated), so this is good to about 0.1 s. Returns "" if the capture has no datetime.
     """
     cap = next((c for c in meta["captures"] if int(c["core:sample_start"]) == seg[0]), meta["captures"][0])
     stamp = cap.get("core:datetime", "")
     if not stamp:
         return ""
+    lost = 0
+    for at, n in discontinuities(meta):
+        if seg[0] < at <= start:
+            if n is None:
+                raise UnknownTime(f"a discontinuity of unknown length at sample {at} precedes the clip "
+                                  f"in its capture (which starts at sample {seg[0]})")
+            lost += n
     t0 = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    t = t0 + dt.timedelta(seconds=(start - seg[0]) / rate)
-    return t.astimezone(dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    us = round((start - seg[0] + lost) * 1_000_000 / rate)          # integer microseconds, rounded
+    t = (t0 + dt.timedelta(microseconds=us)).astimezone(dt.timezone.utc)
+    t = t.replace(microsecond=0) + dt.timedelta(milliseconds=round(t.microsecond / 1000))
+    return t.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def main() -> int:
@@ -76,7 +97,8 @@ def main() -> int:
     if gaps:
         s0, n0 = gaps[0]
         raise SystemExit(f"clip {a.start_s}s+{a.seconds}s crosses {len(gaps)} discontinuit"
-                         f"{'y' if len(gaps) == 1 else 'ies'} (first at sample {s0}, {n0} samples lost); "
+                         f"{'y' if len(gaps) == 1 else 'ies'} (first at sample {s0}, "
+                         f"{'an unknown number of' if n0 is None else n0} samples lost); "
                          "choose a clip inside a gap-free stretch")
     shift = a.center - seg[2]
     if abs(shift) + a.rate / 2 > src_rate / 2:
@@ -86,6 +108,10 @@ def main() -> int:
     y *= np.exp(-2j * np.pi * shift * n / src_rate)
     dec = src_rate // a.rate
     y = np.convolve(y, lowpass(16 * dec + 1, 0.45 / dec), mode="same")[::dec]
+    try:
+        when, when_note = clip_datetime(meta, seg, start, src_rate), ""
+    except UnknownTime as e:
+        when, when_note = "", f"; core:datetime omitted: {e}"
     peak = np.max(np.abs(np.concatenate([y.real, y.imag]))) or 1.0
     scale = 0.9 * 32767 / peak
     iq = np.empty(2 * len(y), dtype="<i2")
@@ -100,16 +126,17 @@ def main() -> int:
             "core:description": (f"Real Airspy HF+ recording (Window 1), clipped: source sha512 "
                                  f"{meta['global'].get('core:sha512', '?')[:16]}..., source center {seg[2]} Hz "
                                  f"@ {src_rate} S/s, {a.start_s}s+{a.seconds}s, shifted to {a.center} Hz, "
-                                 f"decimated x{dec}, normalized to 90% full scale"),
+                                 f"decimated x{dec}, normalized to 90% full scale{when_note}"),
             "core:recorder": "tools/window1/clip.py",
             "core:hw": meta["global"].get("core:hw", ""),
         },
         "captures": [{"core:sample_start": 0, "core:frequency": a.center,
-                      "core:datetime": clip_datetime(meta, seg, start, src_rate)}],
+                      **({"core:datetime": when} if when else {})}],
         "annotations": [],
     }
     Path(str(a.out) + ".sigmf-meta").write_text(json.dumps(out_meta, indent=2, sort_keys=True) + "\n")
-    print(json.dumps({"out": str(a.out), "samples": len(y), "bytes": len(data)}))
+    print(json.dumps({"out": str(a.out), "samples": len(y), "bytes": len(data), "datetime": when or None,
+                      **({"datetime_note": when_note[2:]} if when_note else {})}))
     return 0
 
 

@@ -42,13 +42,19 @@ def segments(meta: dict, n_samples: int) -> list[tuple[int, int, int]]:
     return out
 
 
-def discontinuities(meta: dict) -> list[tuple[int, int]]:
-    """(file sample index, samples lost there) for every annotated gap."""
-    out = []
+def discontinuities(meta: dict) -> list[tuple[int, int | None]]:
+    """(file sample index, samples lost just before it) for every annotated gap.
+
+    The count is None when the annotation does not state a valid non-negative
+    k2websdr:gap_samples: the gap is real but its length is unknown, never "0".
+    """
+    out: list[tuple[int, int | None]] = []
     for a in meta.get("annotations", []):
         if a.get("core:label") == "discontinuity" or "k2websdr:gap_samples" in a:
-            out.append((int(a["core:sample_start"]), int(a.get("k2websdr:gap_samples", 0))))
-    return sorted(out)
+            n = a.get("k2websdr:gap_samples")
+            known = isinstance(n, int) and not isinstance(n, bool) and n >= 0
+            out.append((int(a["core:sample_start"]), n if known else None))
+    return sorted(out, key=lambda g: g[0])
 
 
 def gap_free_runs(meta: dict, start: int, end: int) -> list[tuple[int, int]]:

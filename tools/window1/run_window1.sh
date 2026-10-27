@@ -3,6 +3,11 @@
 # Run on the Optiplex as k2dev from ~/K2SDR:   bash tools/window1/run_window1.sh
 # It pauses whenever Adam needs to do something. Every result goes to one folder.
 #
+#   --results-dir DIR   parent for this run's results  (default: <repo>/window1-results)
+#   --bundle-dir DIR    parent for the small bundle    (default: /tmp)
+# Each run writes only DIR/<timestamp> and BUNDLE_DIR/k2-window1-<timestamp>[.tar.gz], and
+# refuses to start if either already exists: it never overwrites or deletes earlier results.
+#
 # Failure policy: a step everything else depends on (finding/opening the Airspy,
 # reading its info) stops the session at once. An independent measurement that
 # fails is recorded and the session continues; whatever depends on it (analysis,
@@ -11,17 +16,31 @@
 # The results bundle is still written so the failure can be diagnosed.
 set -uo pipefail
 
+RESULTS_PARENT=""; BUNDLE_PARENT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --results-dir) RESULTS_PARENT=$(realpath -m -- "${2:?--results-dir needs a value}"); shift 2 ;;
+    --bundle-dir)  BUNDLE_PARENT=$(realpath -m -- "${2:?--bundle-dir needs a value}"); shift 2 ;;
+    *) echo "usage: run_window1.sh [--results-dir DIR] [--bundle-dir DIR]" >&2; exit 2 ;;
+  esac
+done
+
 cd "$(dirname "$0")/../.."
 ROOT=$(pwd)
+RESULTS_PARENT=${RESULTS_PARENT:-$ROOT/window1-results}   # gitignored; large recordings stay here
+BUNDLE_PARENT=${BUNDLE_PARENT:-/tmp}                       # small files Adam copies to his Mac
 PROBE="${W1_PROBE:-$ROOT/build/worker/ksdr-airspyhf-probe}"
 # Test-only knobs (CI rehearsal against the mock); all unset for the real window.
 RATE_S=${W1_RATE_S:-60}; LONG_S=${W1_LONG_S:-600}; REC_S=${W1_REC_S:-}; UNPLUG_STREAM_S=${W1_UNPLUG_STREAM_S:-60}
 CLIP_START=${W1_CLIP_START:-5}; CLIP_LEN=${W1_CLIP_LEN:-}
 PY="$ROOT/control/.venv/bin/python"
 TS=$(date +%Y%m%d-%H%M%S)
-OUT="$ROOT/window1-results/$TS"          # gitignored; large recordings stay here
-UPLOAD="/tmp/k2-window1-$TS"              # small files Adam copies to his Mac
-mkdir -p "$OUT/rec" "$UPLOAD"
+OUT="$RESULTS_PARENT/$TS"
+UPLOAD="$BUNDLE_PARENT/k2-window1-$TS"
+for p in "$OUT" "$UPLOAD" "$UPLOAD.tar.gz"; do
+  [ ! -e "$p" ] || { echo "Refusing to reuse $p (earlier results are never overwritten); wait a second and retry."; exit 1; }
+done
+mkdir -p "$RESULTS_PARENT" "$BUNDLE_PARENT" && mkdir "$OUT" "$OUT/rec" "$UPLOAD" || { echo "Cannot create $OUT or $UPLOAD"; exit 1; }
 LOG="$OUT/window1.jsonl"
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
@@ -41,7 +60,7 @@ restore_help() {
 bundle() {
   for f in "$LOG" "$OUT/owrx-before.json" "$OUT/owrx-after.json"; do [ -f "$f" ] && cp "$f" "$UPLOAD/"; done
   printf '%s\n' "${FAILURES[@]}" > "$UPLOAD/FAILURES.txt"
-  tar -C /tmp -czf "$UPLOAD.tar.gz" "$(basename "$UPLOAD")" && chmod a+r "$UPLOAD.tar.gz"
+  tar -C "$BUNDLE_PARENT" -czf "$UPLOAD.tar.gz" "$(basename "$UPLOAD")" && chmod a+r "$UPLOAD.tar.gz"
 }
 send_help() {
   echo "   For Claude (small):  $UPLOAD.tar.gz"
