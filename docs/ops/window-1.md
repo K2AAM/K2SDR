@@ -102,6 +102,14 @@ The full recordings (about 0.8 GB) stay on the Optiplex in
 
 ---
 
+## Where results go
+
+By default the full recordings go to `~/K2SDR/window1-results/<timestamp>/` and the
+small bundle to `/tmp/k2-window1-<timestamp>.tar.gz`. `--results-dir DIR` and
+`--bundle-dir DIR` change those parents. A run only ever creates its own timestamped
+folder and bundle; it refuses to start if they already exist, and it never deletes
+anything. The automated tests always use their own temporary folders.
+
 ## If something goes wrong
 
 The script says so in red. There are two kinds:

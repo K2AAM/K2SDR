@@ -270,76 +270,238 @@ def test_clip_refuses_to_run_past_a_retune_or_the_end(retune_recording, tmp_path
 
 # --------------------------------------------------------------- guided script
 
+# --------------------------------------------------------------- guided script
+#
+# Every run writes only inside its own pytest tmp_path (--results-dir / --bundle-dir), and
+# nothing here deletes anything: the real defaults (<repo>/window1-results, /tmp/k2-window1-*)
+# can hold hardware measurements and are only ever stat()ed, to prove they were not touched.
+
+def _snapshot_meta(paths) -> dict:
+    """{path: (size, mtime_ns)} for every file under the given roots, read-only."""
+    out = {}
+    for root in paths:
+        root = Path(root)
+        if root.is_file():
+            st = root.stat()
+            out[str(root)] = (st.st_size, st.st_mtime_ns)
+        elif root.is_dir():
+            for f in root.rglob("*"):
+                if f.is_file():
+                    st = f.stat()
+                    out[str(f)] = (st.st_size, st.st_mtime_ns)
+    return out
+
+
+def _real_default_locations():
+    return [ROOT / "window1-results", *Path("/tmp").glob("k2-window1-*")]
+
+
+@pytest.fixture
+def real_results_untouched():
+    """Fails the test if anything under the real default result locations changed or vanished."""
+    before = _snapshot_meta(_real_default_locations())
+    yield
+    after = _snapshot_meta(_real_default_locations())
+    assert {k: v for k, v in after.items() if k in before} == before, "real Window 1 results were modified"
+    assert set(after) == set(before), "a test wrote into the real Window 1 result locations"
+
+
+def seed_existing(results: Path, bundles: Path) -> dict:
+    """Plant 'earlier hardware results' where a new run will write, and hash them byte for byte."""
+    rng = np.random.default_rng(7)
+    old = results / "20261026-181353"
+    (old / "rec").mkdir(parents=True)
+    (old / "rec" / "wwv10.sigmf-data").write_bytes(rng.bytes(64 * 1024))
+    (old / "rec" / "wwv10.sigmf-meta").write_text('{"global": {}, "captures": [], "annotations": []}\n')
+    (old / "window1.jsonl").write_text('{"event":"operator","step":"real","note":"keep me"}\n')
+    ob = bundles / "k2-window1-20261026-181353"
+    ob.mkdir(parents=True)
+    (ob / "airspyhf_wwv10_48k.sigmf-data").write_bytes(rng.bytes(32 * 1024))
+    (bundles / "k2-window1-20261026-181353.tar.gz").write_bytes(rng.bytes(16 * 1024))
+    (bundles / "k2-w1-extra.tar.gz").write_bytes(rng.bytes(8 * 1024))
+    return _hash_tree(results, bundles)
+
+
+def _hash_tree(*roots) -> dict:
+    import hashlib
+    return {str(f): hashlib.sha256(f.read_bytes()).hexdigest()
+            for r in roots for f in sorted(Path(r).rglob("*")) if f.is_file()}
+
+
+def assert_seed_intact(seed: dict) -> None:
+    import hashlib
+    for path, digest in seed.items():
+        assert Path(path).is_file(), f"pre-existing result deleted: {path}"
+        assert hashlib.sha256(Path(path).read_bytes()).hexdigest() == digest, f"pre-existing result changed: {path}"
+
+
 def run_window(tmp_path, probe_path=MOCK, extra_env=None, rec_s="3"):
+    """Run the script with this test's own result/bundle parents; returns (result, run_dir, bundle)."""
+    results, bundles = tmp_path / "results", tmp_path / "bundles"
+    results.mkdir(exist_ok=True)
+    bundles.mkdir(exist_ok=True)
+    before_runs = {p.name for p in results.iterdir()}
+    before_bundles = {p.name for p in bundles.glob("*.tar.gz")}
     env = dict(os.environ, W1_TEST="1", W1_PROBE=str(probe_path), W1_RATE_S="1", W1_LONG_S="1", W1_REC_S=rec_s,
                W1_UNPLUG_STREAM_S="4", W1_UNPLUG_ENV="MOCK_UNPLUG_AT_S=1.5", W1_UNPLUG_PROMPT_S="1",
                W1_REPLUG_WAIT_S="0", W1_CLIP_START="0.5", W1_CLIP_LEN="1", TMPDIR=str(tmp_path), **(extra_env or {}))
-    return subprocess.run(["bash", str(ROOT / "tools/window1/run_window1.sh")], input="\n" * 40, text=True,
-                          capture_output=True, timeout=240, env=env, cwd=ROOT)
+    r = subprocess.run(["bash", str(ROOT / "tools/window1/run_window1.sh"), "--results-dir", str(results),
+                        "--bundle-dir", str(bundles)], input="\n" * 40, text=True, capture_output=True,
+                       timeout=240, env=env, cwd=ROOT)
+    new_runs = [results / n for n in {p.name for p in results.iterdir()} - before_runs]
+    new_bundles = [bundles / n for n in {p.name for p in bundles.glob("*.tar.gz")} - before_bundles]
+    assert len(new_runs) == 1 and len(new_bundles) == 1, (new_runs, new_bundles, r.stdout[-2000:])
+    assert str(new_bundles[0]) in r.stdout                     # the path the operator is told to copy
+    return r, new_runs[0], new_bundles[0]
 
 
-def cleanup_window():
-    import shutil
-    shutil.rmtree(ROOT / "window1-results", ignore_errors=True)
-    for p in Path("/tmp").glob("k2-window1-*"):
-        shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink()
+def bundle_names(bundle: Path) -> str:
+    return subprocess.run(["tar", "tzf", str(bundle)], capture_output=True, text=True, check=True).stdout
 
 
 RESTORE = ("sudo systemctl start openwebrx", "sudo gpasswd -d k2dev plugdev")
 
 
-def test_window_stops_when_no_device_can_be_opened(tmp_path):
-    r = run_window(tmp_path, extra_env={"MOCK_BUSY": "1"})
-    try:
-        assert r.returncode != 0
-        assert "STOPPED: no Airspy could be opened" in r.stdout
-        assert "== Done" not in r.stdout
-        tail = r.stdout[r.stdout.index("STOPPED"):]
-        assert all(c in tail for c in RESTORE)                           # restore instructions shown last
-        assert '"mode":"stream"' not in r.stdout and '"mode":"record"' not in r.stdout   # dependents skipped
-        bundle = next(Path("/tmp").glob("k2-window1-*.tar.gz"))          # still diagnosable
-        names = subprocess.run(["tar", "tzf", str(bundle)], capture_output=True, text=True).stdout
-        assert "FAILURES.txt" in names and "window1.jsonl" in names
-    finally:
-        cleanup_window()
+def test_window_stops_when_no_device_can_be_opened(tmp_path, real_results_untouched):
+    seed = seed_existing(tmp_path / "results", tmp_path / "bundles")
+    r, run_dir, bundle = run_window(tmp_path, extra_env={"MOCK_BUSY": "1"})
+    assert r.returncode != 0
+    assert "STOPPED: no Airspy could be opened" in r.stdout
+    assert "== Done" not in r.stdout
+    tail = r.stdout[r.stdout.index("STOPPED"):]
+    assert all(c in tail for c in RESTORE)                           # restore instructions shown last
+    assert '"mode":"stream"' not in r.stdout and '"mode":"record"' not in r.stdout   # dependents skipped
+    names = bundle_names(bundle)                                     # still diagnosable
+    assert "FAILURES.txt" in names and "window1.jsonl" in names
+    assert (run_dir / "window1.jsonl").is_file()
+    assert_seed_intact(seed)                                         # failure path deleted nothing
 
 
-def test_window_reports_a_failed_recording_and_skips_its_analysis(tmp_path):
+def test_window_reports_a_failed_recording_and_skips_its_analysis(tmp_path, real_results_untouched):
+    seed = seed_existing(tmp_path / "results", tmp_path / "bundles")
     wrapper = tmp_path / "probe.sh"
     wrapper.write_text(f'#!/bin/sh\ncase "$*" in *rec/wwv15*) echo "simulated disk failure" >&2; exit 5;; esac\n'
                        f'exec "{MOCK}" "$@"\n')
     wrapper.chmod(0o755)
-    r = run_window(tmp_path, probe_path=wrapper)
-    try:
-        assert r.returncode == 1, r.stdout[-3000:]
-        assert "FINISHED WITH 1 FAILURE(S)" in r.stdout and "recording wwv15" in r.stdout
-        assert "skipped: carrier analysis wwv15" in r.stdout
-        assert "== Done" not in r.stdout
-        bundle = next(Path("/tmp").glob("k2-window1-*.tar.gz"))
-        names = subprocess.run(["tar", "tzf", str(bundle)], capture_output=True, text=True).stdout
-        assert "airspyhf_wwv10_48k.sigmf-meta" in names                  # independent work still delivered
-    finally:
-        cleanup_window()
+    r, run_dir, bundle = run_window(tmp_path, probe_path=wrapper)
+    assert r.returncode == 1, r.stdout[-3000:]
+    assert "FINISHED WITH 1 FAILURE(S)" in r.stdout and "recording wwv15" in r.stdout
+    assert "skipped: carrier analysis wwv15" in r.stdout
+    assert "== Done" not in r.stdout
+    assert "airspyhf_wwv10_48k.sigmf-meta" in bundle_names(bundle)  # independent work still delivered
+    assert_seed_intact(seed)
 
 
-def test_full_window_rehearsal(tmp_path):
+def test_full_window_rehearsal(tmp_path, real_results_untouched):
     """Run tools/window1/run_window1.sh end to end against the mock, answering every prompt."""
-    r = run_window(tmp_path)
-    try:
-        assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-2000:]
-        assert "== Done" in r.stdout and "FAILED" not in r.stdout
-        assert "exit code: 4" in r.stdout                       # unplug detected
-        bundle = next(Path("/tmp").glob("k2-window1-*.tar.gz"))
-        names = subprocess.run(["tar", "tzf", str(bundle)], capture_output=True, text=True).stdout
-        for f in ("airspyhf_wwv10_48k.sigmf-meta", "airspyhf_ft8_40m_48k.sigmf-data", "window1.jsonl",
-                  "owrx-before.json", "owrx-after.json"):
-            assert f in names
-        log = [json.loads(x) for x in (ROOT / "window1-results").glob("*/window1.jsonl").__next__().read_text()
-               .splitlines() if x.startswith("{")]
-        assert any(e.get("event") == "operator" for e in log)    # prompts and answers are recorded
-        assert sum(1 for e in log if e.get("event") == "summary" and e.get("mode") == "record") == 7
-    finally:
-        cleanup_window()
+    seed = seed_existing(tmp_path / "results", tmp_path / "bundles")
+    r, run_dir, bundle = run_window(tmp_path)
+    assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-2000:]
+    assert "== Done" in r.stdout and "FAILED" not in r.stdout
+    assert "exit code: 4" in r.stdout                       # unplug detected
+    names = bundle_names(bundle)
+    for f in ("airspyhf_wwv10_48k.sigmf-meta", "airspyhf_ft8_40m_48k.sigmf-data", "window1.jsonl",
+              "owrx-before.json", "owrx-after.json"):
+        assert f in names
+    log = [json.loads(x) for x in (run_dir / "window1.jsonl").read_text().splitlines() if x.startswith("{")]
+    assert any(e.get("event") == "operator" for e in log)    # prompts and answers are recorded
+    assert sum(1 for e in log if e.get("event") == "summary" and e.get("mode") == "record") == 7
+    assert_seed_intact(seed)                                 # success path deleted nothing
+
+
+def test_window_refuses_to_reuse_an_existing_run_directory(tmp_path, real_results_untouched):
+    """Two runs in the same second would share a timestamp: the second must refuse, not overwrite."""
+    results, bundles = tmp_path / "results", tmp_path / "bundles"
+    stub = tmp_path / "date"
+    stub.write_text("#!/bin/sh\necho 20261026-181353\n")      # pin the script's timestamp
+    stub.chmod(0o755)
+    seed = seed_existing(results, bundles)
+    env = dict(os.environ, W1_TEST="1", W1_PROBE=str(MOCK), PATH=f"{tmp_path}:{os.environ['PATH']}")
+    r = subprocess.run(["bash", str(ROOT / "tools/window1/run_window1.sh"), "--results-dir", str(results),
+                        "--bundle-dir", str(bundles)], input="", text=True, capture_output=True, timeout=60,
+                       env=env, cwd=ROOT)
+    assert r.returncode == 1 and "Refusing to reuse" in r.stdout, r.stdout + r.stderr
+    assert_seed_intact(seed)
+    assert _hash_tree(results, bundles) == seed                  # and nothing new was written either
+
+
+# --------------------------------------------------------------- clip timestamps across known gaps
+
+def synthetic_recording(base: Path, captures, annotations, n=700_000, rate=192_000) -> Path:
+    """cf32 noise with the given captures [(sample_start, freq, datetime)] and gap annotations."""
+    rng = np.random.default_rng(1)
+    x = (rng.standard_normal(n) + 1j * rng.standard_normal(n)).astype(np.complex64) * 0.01
+    x.tofile(str(base) + ".sigmf-data")
+    ann = []
+    for at, lost in annotations:
+        a = {"core:sample_start": at, "core:sample_count": 0, "core:label": "discontinuity"}
+        if lost is not None:
+            a["k2websdr:gap_samples"] = lost
+        ann.append(a)
+    meta = {"global": {"core:datatype": "cf32_le", "core:sample_rate": rate, "core:version": "1.2.6"},
+            "captures": [{"core:sample_start": s, "core:frequency": f, "core:datetime": d} for s, f, d in captures],
+            "annotations": ann}
+    Path(str(base) + ".sigmf-meta").write_text(json.dumps(meta))
+    return base
+
+
+def clip_at(src, tmp_path, start_sample, seconds=0.25, center=10_001_000, rate=192_000):
+    out = tmp_path / f"clip_{start_sample}"
+    r = clip_run(src, out, "--center", center, "--rate", 48000, "--start-s", repr(start_sample / rate),
+                 "--seconds", seconds)
+    assert r.returncode == 0, r.stderr
+    meta = json.loads(Path(str(out) + ".sigmf-meta").read_text())
+    return meta["captures"][0].get("core:datetime"), meta["global"]["core:description"], json.loads(r.stdout)
+
+
+T0 = "2026-10-26T22:00:00Z"
+
+
+@pytest.mark.parametrize("annotations, start, expect", [
+    ([], 230_400, "2026-10-26T22:00:01.200Z"),                                  # no gaps
+    ([(96_000, 192_000)], 230_400, "2026-10-26T22:00:02.200Z"),                 # the reported reproduction
+    ([(96_000, 192_000), (150_000, 9_600)], 230_400, "2026-10-26T22:00:02.250Z"),   # several earlier gaps
+    ([(230_400, 19_200)], 230_400, "2026-10-26T22:00:01.300Z"),                 # gap right before the 1st sample
+    ([(96_000, 192_000), (400_000, 50_000)], 230_400, "2026-10-26T22:00:02.200Z"),  # later gap ignored
+])
+def test_clip_datetime_includes_known_gaps_before_the_clip(tmp_path, annotations, start, expect):
+    src = synthetic_recording(tmp_path / "src", [(0, 10_000_000, T0)], annotations)
+    when, _, out = clip_at(src, tmp_path, start)
+    assert when == expect and out["datetime"] == expect
+
+
+def test_clip_in_a_later_capture_uses_that_captures_stamp_without_double_counting(tmp_path):
+    # Capture 2 starts at sample 300000 with its own wall-clock stamp, which already includes the
+    # 192000-sample gap of capture 1. Only the gap inside capture 2 (19200 samples) is added.
+    src = synthetic_recording(tmp_path / "src",
+                              [(0, 10_000_000, T0), (300_000, 15_000_000, "2026-10-26T22:00:10Z")],
+                              [(96_000, 192_000), (350_000, 19_200)])
+    when, _, _ = clip_at(src, tmp_path, 400_000, center=15_001_000)
+    assert when == "2026-10-26T22:00:10.621Z"          # 10 s + (100000 + 19200) / 192000 = 10.6208 s
+
+
+def test_unknown_length_gap_before_the_clip_omits_the_datetime_explicitly(tmp_path):
+    src = synthetic_recording(tmp_path / "src", [(0, 10_000_000, T0)], [(96_000, None)])
+    when, desc, out = clip_at(src, tmp_path, 230_400)
+    assert when is None and out["datetime"] is None
+    assert "unknown length" in out["datetime_note"] and "core:datetime omitted" in desc
+
+
+def test_unknown_length_gap_in_an_earlier_capture_does_not_affect_a_later_one(tmp_path):
+    src = synthetic_recording(tmp_path / "src",
+                              [(0, 10_000_000, T0), (300_000, 15_000_000, "2026-10-26T22:00:10Z")],
+                              [(96_000, None)])
+    when, _, _ = clip_at(src, tmp_path, 396_000, center=15_001_000)
+    assert when == "2026-10-26T22:00:10.500Z"
+
+
+def test_clip_still_refuses_to_cross_a_known_or_unknown_gap(tmp_path):
+    for lost in (19_200, None):
+        src = synthetic_recording(tmp_path / f"src_{lost}", [(0, 10_000_000, T0)], [(250_000, lost)])
+        r = clip_run(src, tmp_path / f"x_{lost}", "--center", 10_001_000, "--rate", 48000,
+                     "--start-s", repr(230_400 / 192_000), "--seconds", 0.25)
+        assert r.returncode != 0 and "discontinuit" in r.stderr, r.stderr
+        assert ("an unknown number of" in r.stderr) == (lost is None)
 
 
 @pytest.mark.parametrize("loss", [0, 3000])
