@@ -50,11 +50,34 @@ def rig_checks(page, timeout: float, problems: list[str]) -> None:
     else:
         problems.append(f"USB passband not shown: low edge {lo.input_value()!r}")
     time.sleep(4)
-    stats = page.locator(".small").inner_text()
+    stats = page.locator(".jit").inner_text()
     underruns = int(stats.split("underruns")[1].strip())
     if underruns > 1:
         problems.append(f"audio underruns after start: {stats}")
     print("rig:", stats)
+
+
+def record_checks(page, timeout: float, problems: list[str]) -> None:
+    """Record 3 s from the RIG, stop, then find it (done, downloadable) in the Recordings drawer."""
+    t = timeout * 1000
+    page.get_by_text("dBFS", exact=False).first.wait_for(timeout=t)          # the channel is up
+    freq = page.locator("output.big").inner_text()                            # B5: the same Hz everywhere
+    mode = page.locator("label").filter(has_text="Mode").locator("select").input_value().upper()
+    page.get_by_role("button", name="● Record").click()
+    page.get_by_role("button", name="■ Stop recording").wait_for(timeout=t)
+    time.sleep(3)
+    shown = page.locator(".recinfo").inner_text()
+    page.get_by_role("button", name="■ Stop recording").click()
+    page.get_by_role("button", name="● Record").wait_for(timeout=t)
+    page.get_by_role("button", name="Recordings").click()
+    row = page.locator(".drawer tbody tr").first
+    row.wait_for(timeout=t)
+    text = row.inner_text()
+    href = row.get_by_role("link", name="Download").get_attribute("href") or ""
+    hz = freq.replace(" MHz", "").replace(".", "").replace(" ", "").lstrip("0")
+    if "done" not in text or mode not in text or freq not in text or not href.endswith("/file") or f"_{hz}_" not in shown:
+        problems.append(f"recording row looks wrong: {text!r} {href!r}")
+    print("record:", shown, "|", " ".join(text.split()))
 
 
 def main() -> int:
@@ -63,6 +86,7 @@ def main() -> int:
     ap.add_argument("--wait-text", action="append", default=[], help="extra text that must appear")
     ap.add_argument("--timeout", type=float, default=15.0)
     ap.add_argument("--rig", action="store_true", help="also drive the RIG: audio, frequency entry, mode")
+    ap.add_argument("--record", action="store_true", help="also record 3 s and find it in the Recordings drawer")
     ap.add_argument("--mobile", action="store_true", help="iPhone-sized viewport (390x844, DPR 3, touch)")
     ap.add_argument("--settle", type=float, default=1.0, help="seconds to let the page run before checking")
     a = ap.parse_args()
@@ -135,6 +159,8 @@ recording = "{ROOT}/fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta"
                     if a.screenshot:
                         page.screenshot(path=str(a.screenshot))
                     raise
+            if a.record:
+                record_checks(page, a.timeout, problems)
             time.sleep(a.settle)
             if a.screenshot:
                 page.screenshot(path=str(a.screenshot))
