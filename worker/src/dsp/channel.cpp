@@ -42,6 +42,8 @@ bool Channel::parse_mode(const std::string& s, Mode& m) {
 }
 
 void Channel::default_passband(Mode m, int32_t& lo, int32_t& hi) {
+    lo = 300;   // USB; every mode below overrides (also keeps GCC 14's -Wmaybe-uninitialized quiet)
+    hi = 2700;
     switch (m) {
         case Mode::USB: lo = 300; hi = 2700; break;
         case Mode::LSB: lo = -2700; hi = -300; break;
@@ -74,7 +76,7 @@ void Channel::validate() const {
 }
 
 Channel::Channel(const ChannelConfig& cfg) : cfg_(cfg), p_(std::make_unique<Impl>()) {
-    int32_t lo, hi;
+    int32_t lo = 0, hi = 0;
     default_passband(cfg_.mode, lo, hi);
     if (cfg_.pass_lo_hz == INT32_MIN) cfg_.pass_lo_hz = lo;
     if (cfg_.pass_hi_hz == INT32_MIN) cfg_.pass_hi_hz = hi;

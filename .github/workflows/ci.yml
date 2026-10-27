@@ -76,7 +76,10 @@ jobs:
           lines = log[start:start + 60] if start is not None else log[-80:]
           # Last traceback lines help when the summary alone is not enough.
           tb = [l for l in log if re.match(r"^E\s", l)][-30:]
-          msg = "\n".join(lines + ["--- assertion lines ---"] + tb)
+          # Compiler/linker errors first: long command lines would otherwise push them out.
+          cc = [l[:400] for l in log if re.search(r"(error:|undefined reference|FAILED:)", l)][:40]
+          lines = [l[:400] for l in lines]
+          msg = "\n".join(["--- build errors ---"] + cc + ["--- log ---"] + lines + ["--- assertion lines ---"] + tb)
           msg = msg.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
           print(f"::error title=make check failed::{msg[:60000]}")
           PY
