@@ -120,5 +120,6 @@ listeners; a shared first decimation stage is the lever if many channels are nee
 So ten listeners plus the spectrum stay under about 15 % of one core. The internal FFT stays.
 
 `make dsp-deps` on the Optiplex also passed with `--expect-fftw-installed --expect-debian-liquid`.
-There, Debian's FFTW-linked liquid-dsp 1.7.0 is actually installed (as OpenWebRX's
-dependencies), and the worker still uses only the project-built 1.8.3.
+There, Debian's FFTW-linked liquid-dsp 1.7.0 and FFTW are actually installed (`libliquid-dev`
+1.7.0-1; why it is installed was not checked), and the worker still uses only the
+project-built 1.8.3.
