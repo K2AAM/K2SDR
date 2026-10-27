@@ -516,6 +516,32 @@ def test_timing_log_measures_samples_lost_on_retune(tmp_path, loss):
     res = tool("timing.py", log, "--rate", 192000)
     assert len(res) == 2
     for r in res:
-        assert abs(r["lost_samples"] - loss) < 150, res               # < 1 ms at 192k
+        assert abs(r["lost_samples"] - loss) < 60, res                # robust fit: ~0.3 ms at 192k
         assert r["library_dropped_in_span"] == 0                       # the mock hides it, like a silent loss
         assert abs(r["rate_before_hz"] - 192000) < 200 and abs(r["rate_after_hz"] - 192000) < 200
+
+
+def test_timing_fit_ignores_late_callbacks(tmp_path):
+    """Deterministic: a synthetic timing log with 1490 samples lost at the retune and a few
+    callbacks delivered up to 30 ms late. Least squares is dragged off; the robust fit is not."""
+    rate, block = 192000, 2048
+    rng = np.random.default_rng(4)
+    rows, total, t_ns = [], 0, 1_000_000_000
+    call_ns = None
+    for k in range(400):                                 # ~4.3 s of callbacks
+        total += block
+        t = t_ns + int(total / rate * 1e9)
+        if call_ns is None and total >= 2 * rate:
+            call_ns = t + 1000
+            t_ns += int(1490 / rate * 1e9)               # samples lost: later callbacks shift in time
+        jitter = int(rng.uniform(0, 0.4e6))              # ordinary USB jitter, always late
+        if k % 37 == 5:
+            jitter += int(rng.uniform(10e6, 30e6))       # occasional 10-30 ms stalls
+        rows.append(f"cb,{t + jitter},{total},{block},0")
+    rows.append(f"retune,{call_ns},{call_ns + 300000},15005000,0")
+    log = tmp_path / "t.csv"
+    log.write_text("kind,t_ns,a,b,c\n" + "\n".join(rows) + "\n")
+    (r,) = tool("timing.py", log, "--rate", rate)
+    assert abs(r["lost_samples"] - 1490) < 30, r
+    assert abs(r["lost_samples_lstsq"] - 1490) > abs(r["lost_samples"] - 1490), r   # lstsq is the worse one
+    assert r["max_late_ms"] > 10

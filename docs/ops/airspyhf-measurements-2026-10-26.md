@@ -219,6 +219,14 @@ samples-delivered-against-host-time was fitted on the roughly 85 callbacks eithe
 The fitted rates before and after agree with each other and with 192000 to within
 ±40 Hz, so the offset is not a clock effect.
 
+These figures were computed with the original least-squares fit. `timing.py` now uses a robust
+fit (Theil–Sen slope, median intercept), because occasional late callbacks can pull a
+least-squares line by tens to hundreds of samples. That was seen with the mock on a loaded
+machine, not in this data, where residuals were small (±4 samples). Re-check by re-running the
+tool on the saved log (no hardware needed):
+`control/.venv/bin/python tools/window1/timing.py window1-results/1b/retune-timing.csv --rate 192000`;
+it prints both the robust and the least-squares result.
+
 **It is lost, not delayed.** Over the whole run the shortfall is 192000 × 24.01 −
 4 583 424 = 26 496 samples. That equals the start-up delay (about 85 ms, about 16 300
 samples, the same as in Window 1) plus 7 × about 1490. A pure added latency could not
