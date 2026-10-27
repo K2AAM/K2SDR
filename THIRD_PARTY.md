@@ -68,7 +68,7 @@ but link our own `worker/probe/mock_airspyhf.c`, not the library.
 
 Versions above are what `debian:trixie` installed in CI on 2026-10-27 (CI reports them in every run as
 the "Runtime packages" annotation; `tools/check_dsp_deps.py` records the worker's `ldd` closure).
-To confirm on the Optiplex: `dpkg-query -W libairspyhf1 libusb-1.0-0 libudev1 libcap2`.
+Confirmed identical on the Optiplex (Adam, 2026-10-27, `dpkg-query -W libairspyhf1 libusb-1.0-0 libudev1 libcap2`).
 
 ## DSP (worker; M1)
 
