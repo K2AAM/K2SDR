@@ -1,8 +1,12 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { AudioPlayer } from "./lib/audio";
   import { Connection, type ConnStatus } from "./lib/client";
   import { formatFrequency } from "./lib/freq";
-  import SpectrumView from "./SpectrumView.svelte";
+  import { Listener, loadSettings } from "./lib/listener";
   import type { Json } from "./lib/patch";
+  import Rig from "./Rig.svelte";
+  import SpectrumView from "./SpectrumView.svelte";
 
   type Receiver = {
     label: string; driver: string; capture_gen: number;
@@ -11,19 +15,65 @@
   };
 
   const conn = new Connection();
+  const player = new AudioPlayer();
   let status: ConnStatus = $state("connecting");
   let receivers: Record<string, Receiver> = $state({});
+  let available: string[] = $state([]);
   let selected: string | null = $state(null);
+  let permissions: string[] = $state([]);
+  let listener: Listener | null = $state(null);
+  let listenerTick = $state(0);
 
   conn.onStatus((s) => (status = s));
   conn.onState(() => {
-    const st = conn.state as { receivers?: Record<string, Json> } | null;
+    const st = conn.state as { receivers?: Record<string, Json>; ledger?: { available?: string[] } } | null;
     receivers = (st?.receivers ?? {}) as unknown as Record<string, Receiver>;
+    available = st?.ledger?.available ?? [];
     if (selected === null || !(selected in receivers)) selected = Object.keys(receivers)[0] ?? null;
+    ensureListener();
   });
-  conn.connect();
+
+  onMount(() => {
+    conn.connect();
+    fetch("/api/session", { credentials: "same-origin" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { permissions?: string[] } | null) => { permissions = j?.permissions ?? []; })
+      .catch(() => {});
+    return () => listener?.close();
+  });
+
+  // One listener channel for the selected receiver; replaced when the selection changes.
+  function ensureListener() {
+    if (!selected || status !== "open" || !available.length) return;
+    if (listener && listener.receiverId === selected) return;
+    const rx = receivers[selected];
+    const center = rx?.capture.center_hz.applied;
+    if (!rx || rx.acquisition.state !== "running" || center == null) return;
+    listener?.close();
+    const s = loadSettings(selected, center);
+    if (!available.includes(s.mode)) s.mode = available.includes("am") ? "am" : available[0]!;
+    const l = new Listener(conn, selected, s, (pcm, flush) => { if (flush) player.flush(); player.push(pcm); });
+    l.onChange(() => listenerTick++);
+    listener = l;
+    void l.open();
+  }
+  $effect(() => { void selected; void status; ensureListener(); });
 
   const rx = $derived(selected !== null ? receivers[selected] : undefined);
+  const marker = $derived.by(() => {
+    void listenerTick;
+    const v = listener?.view;
+    return v && v.passband_hz ? { hz: v.frequency_hz, loHz: v.passband_hz[0], hiHz: v.passband_hz[1] } : null;
+  });
+  const stepHz = $derived.by(() => { void listenerTick; return listener?.settings.stepHz ?? 1000; });
+
+  async function retune(hz: number) {
+    if (!selected) return;
+    await conn.command("receiver.claim", { receiver: selected });
+    await conn.command("receiver.set_capture", { receiver: selected, center_hz: hz });
+    await conn.command("receiver.release", { receiver: selected });
+  }
+
   const statusText: Record<ConnStatus, string> = {
     connecting: "connecting…", open: "connected", reconnecting: "reconnecting…", signed_out: "signed out",
   };
@@ -43,7 +93,6 @@
 <main>
   {#if rx && selected}
     <section class="rx">
-      <span>{rx.label} <span class="muted">({rx.driver})</span></span>
       <span class="acq {rx.acquisition.state}">
         {rx.acquisition.state}{rx.acquisition.detail ? ` — ${rx.acquisition.detail}` : ""}
       </span>
@@ -52,24 +101,30 @@
     </section>
     <div class="spectrum">
       {#key selected}
-        <SpectrumView {conn} receiverId={selected} />
+        <SpectrumView {conn} receiverId={selected} {marker} {stepHz}
+                      onTune={(hz) => listener?.tune({ frequencyHz: hz })} />
       {/key}
     </div>
+    {#if listener}
+      {#key listener}
+        <Rig {listener} {player} modes={available} canRetune={permissions.includes("hw.retune")} onRetune={retune} />
+      {/key}
+    {/if}
   {:else}
     <p class="muted pad">No receivers configured.</p>
   {/if}
 </main>
 
 <style>
-  header { display: flex; align-items: center; gap: .75rem; padding: .4rem .75rem; background: var(--panel);
-           border-bottom: 1px solid var(--line); }
+  :global(#app) { display: grid; grid-template-rows: auto 1fr; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; padding: .4rem .75rem;
+           background: var(--panel); border-bottom: 1px solid var(--line); }
   .brand { font-weight: 600; }
   .conn { margin-left: auto; color: var(--muted); }
   .conn.open { color: var(--ok); }
   .conn.reconnecting { color: var(--warn); }
   .status-link { color: var(--accent); }
-  :global(#app) { display: grid; grid-template-rows: auto 1fr; }
-  main { display: grid; grid-template-rows: auto 1fr; min-height: 0; }
+  main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; }
   .rx { display: flex; flex-wrap: wrap; gap: .3rem 1rem; padding: .3rem .75rem; font-size: 13px;
         border-bottom: 1px solid var(--line); }
   .spectrum { min-height: 0; }
