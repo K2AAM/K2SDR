@@ -1,0 +1,28 @@
+# Window 3: the whole service on the real Airspy HF+, reached over Tailscale Serve (HTTPS) from the
+# Mac and the iPhone. Copy to ~/k2websdr-window3.toml as k2dev; paths are relative to this file's
+# directory once copied (so ~/K2SDR/... below). Validated by control/tests/test_window3_config.py.
+[server]
+host = "127.0.0.1"                 # loopback only; Tailscale Serve proxies https://...:8443 to it
+port = 8075
+state_dir = ".k2websdr-w3/state"   # fresh state: first-run setup with the token in state/setup-token
+runtime_dir = ".k2websdr-w3/run"
+worker_bin = "K2SDR/build/worker/ksdr-worker"
+ledger = "K2SDR/ledger/modes.v1.json"
+web_dir = "K2SDR/web/dist"
+allowed_hosts = ["optiplexsdr.polecat-godzilla.ts.net:8443", "optiplexsdr.polecat-godzilla.ts.net",
+                 "127.0.0.1:8075"]
+allowed_origins = ["https://optiplexsdr.polecat-godzilla.ts.net:8443"]
+cookie_secure = true               # HTTPS only (the AudioWorklet needs a secure context anyway)
+trusted_proxies = ["127.0.0.1/32"] # Tailscale Serve connects from loopback
+recordings_cap_bytes = 1073741824  # 1 GiB for the window
+
+[[receivers]]
+id = "hfplus"
+label = "Airspy HF+ Discovery"
+driver = "airspyhf"
+serial = "3B52978026BA46DA"
+center_hz = 7100000                # 40 m: FT8 at 7.074 MHz, LSB phone above 7.125 MHz
+rate_hz = 384000                   # low-IF; Window 1b: clean for 10 min
+# Window only: up to 165 MHz so WFM (FM broadcast, 88-108 MHz) and NFM (NOAA weather, ~162.4 MHz)
+# can be heard at all. The device has no coverage 31-60 MHz: do not tune there.
+freq_range_hz = [10000, 165000000]
