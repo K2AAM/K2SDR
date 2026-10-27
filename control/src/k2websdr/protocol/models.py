@@ -124,22 +124,51 @@ class ReceiverSetHwGainArgs(Strict):
         return self
 
 
+AgcName = Literal["off", "fast", "medium", "slow"]
+# Passband edges relative to the dial frequency, integer Hz (USB 300..2700, LSB -2700..-300, ...).
+EdgeHz = Annotated[int, Field(strict=True, ge=-100_000, le=100_000)]
+ManualGainDb = Annotated[int, Field(strict=True, ge=0, le=100)]
+Passband = Annotated[list[EdgeHz], Field(min_length=2, max_length=2)]   # [low, high]
+
+
+def _check_passband(pb) -> None:
+    if isinstance(pb, (list, tuple)) and not pb[0] < pb[1]:
+        raise ValueError("passband_hz must be [low, high] with low < high")
+
+
 class ChannelOpenArgs(Strict):
     receiver: ReceiverId
     frequency_hz: Hz        # absolute dial frequency; must lie within the current capture span
     mode: ModeId
+    agc: AgcName = "medium"
+    passband_hz: Passband | None = None    # None: the mode's default
+    manual_gain_db: ManualGainDb = 0                    # fixed demodulator gain when agc is "off"
+
+    @model_validator(mode="after")
+    def _passband(self) -> "ChannelOpenArgs":
+        _check_passband(self.passband_hz)
+        return self
 
 
 class ChannelTuneArgs(Strict):
     channel: ChannelId
     frequency_hz: Hz | None = None
     mode: ModeId | None = None
+    agc: AgcName | None = None
+    passband_hz: Passband | None = None
+    passband_default: bool = False          # back to the mode's default passband (*_hz stays integer-only)
+    manual_gain_db: ManualGainDb | None = None
     if_channel_gen: Gen | None = None
 
     @model_validator(mode="after")
     def _changes_something(self) -> "ChannelTuneArgs":
-        if self.frequency_hz is None and self.mode is None:
-            raise ValueError("channel.tune must change frequency_hz and/or mode")
+        if (self.frequency_hz, self.mode, self.agc, self.passband_hz, self.manual_gain_db) == (None,) * 5 \
+                and not self.passband_default:
+            raise ValueError("channel.tune must change at least one of frequency_hz, mode, agc, passband_hz, "
+                             "passband_default, manual_gain_db")
+        if self.passband_default and self.passband_hz is not None:
+            raise ValueError("give passband_hz or passband_default, not both")
+        _check_passband(self.passband_hz)
         return self
 
 
@@ -368,6 +397,10 @@ class ChannelState(Strict):
     frequency_hz: Hz
     mode: ModeId
     channel_gen: Gen
+    agc: AgcName = "medium"
+    passband_hz: Passband | None = None     # the filter running (worker readback)
+    passband_default: bool = True
+    manual_gain_db: ManualGainDb = 0
     decoder_taps: list[ModeId] = []   # taps sit at demod output, upstream of all listener audio controls
 
 

@@ -41,6 +41,7 @@ RECEIVER_QUEUE_LIMIT = 64     # per receiver: executing + queued hardware comman
 # Listener channels (see docs/protocol/control-v1.md, "Channels"):
 MAX_CHANNELS_PER_SESSION = 4
 MAX_CHANNEL_CMDS_PER_SESSION = 8   # channel commands of one session waiting for the worker
+_AGC = {"off": wc.Agc.OFF, "fast": wc.Agc.FAST, "medium": wc.Agc.MEDIUM, "slow": wc.Agc.SLOW}
 # Browser stream v1 (see docs/protocol/stream-v1.md, "Backpressure"):
 STREAM_AUDIO_QUEUE_BYTES = 96_000  # pending audio per session (~1 s for 4 channels at 24 kB/s)
 
@@ -167,6 +168,10 @@ class _Channel:
     channel_gen: int = 0
     open: bool = False                # worker has applied it
     closing: bool = False
+    agc: str = "medium"
+    passband: tuple[int, int] | None = None   # requested; None: the mode's default
+    manual_gain_db: int = 0
+    applied_passband: tuple[int, int] | None = None
 
 
 class Rejected(Exception):
@@ -468,7 +473,8 @@ class ControlCore:
         return (st["capture"]["center_hz"]["applied"], st["capture"]["sample_rate_hz"]["applied"],
                 st["capabilities"]["sample_format"] in ("ci16", "cf32"))
 
-    def _check_channel_fits(self, rt: ReceiverRuntime, mode: str, frequency_hz: int) -> int:
+    def _check_channel_fits(self, rt: ReceiverRuntime, mode: str, frequency_hz: int,
+                            passband: tuple[int, int] | None = None) -> int:
         """Mode availability (ledger + this receiver) and span. Returns the offset from the centre."""
         if mode not in self.store.view()["ledger"]["available"]:
             raise Rejected(ErrorCode.E_MODE_UNAVAILABLE, f"mode {mode} is not available")
@@ -480,15 +486,17 @@ class ControlCore:
             raise Rejected(ErrorCode.E_MODE_UNAVAILABLE, problem)
         if center is None:
             raise Rejected(ErrorCode.E_DEVICE_FAILED, f"{rt.id} has no applied centre frequency yet")
-        problem = span_problem(mode, frequency_hz, center, rate)
+        problem = span_problem(mode, frequency_hz, center, rate, passband)
         if problem:
             raise Rejected(ErrorCode.E_OUT_OF_RANGE, problem)
         return frequency_hz - center
 
     @staticmethod
     def _worker_channel(ch: _Channel, offset_hz: int) -> wc.Channel:
-        # M1: mode defaults for passband/BFO, medium AGC; listener controls for these come later.
-        return wc.Channel(ch.worker_id, WORKER_MODES[ch.mode].worker, wc.Agc.MEDIUM, offset_hz)
+        # CW pitch (BFO) stays at the worker default (700 Hz).
+        lo, hi = ch.passband if ch.passband is not None else (None, None)
+        return wc.Channel(ch.worker_id, WORKER_MODES[ch.mode].worker, _AGC[ch.agc], offset_hz, lo, hi, None,
+                          ch.manual_gain_db * 100)
 
     def _owned_channel(self, s: Session, cid: str) -> _Channel:
         ch = self._channels.get(cid)
@@ -514,10 +522,22 @@ class ControlCore:
         else:
             self._channel_cmds.pop(sid, None)
 
+    @staticmethod
+    def _applied_passband(mode: str, ap: wc.ChannelApplied) -> tuple[int, int]:
+        """The filter the worker runs (CHANNEL_APPLIED readback; worker-dsp-v1)."""
+        lo, hi = ap.channel.pass_lo_hz, ap.channel.pass_hi_hz
+        if lo is None or hi is None:
+            wm = WORKER_MODES[mode]
+            return wm.pass_lo_hz, wm.pass_hi_hz
+        return lo, hi
+
     def _publish_channel(self, ch: _Channel) -> None:
         with self.store.txn() as t:
             value = m.ChannelState(receiver=ch.receiver, owner=m.ChannelOwner(session=ch.session),
-                                   frequency_hz=ch.frequency_hz, mode=ch.mode, channel_gen=ch.channel_gen)
+                                   frequency_hz=ch.frequency_hz, mode=ch.mode, channel_gen=ch.channel_gen,
+                                   agc=ch.agc, passband_default=ch.passband is None,
+                                   passband_hz=list(ch.applied_passband) if ch.applied_passband else None,
+                                   manual_gain_db=ch.manual_gain_db)
             if ch.id in self.store.view()["channels"]:
                 t.replace("channels", ch.id, value=value)
             else:
@@ -548,7 +568,8 @@ class ControlCore:
     async def _op_channel_open(self, s: Session, cmd: m.ChannelOpen) -> None:
         a = cmd.args
         rt = self._receiver(a.receiver)
-        offset = self._check_channel_fits(rt, a.mode, a.frequency_hz)
+        passband = tuple(a.passband_hz) if a.passband_hz is not None else None
+        offset = self._check_channel_fits(rt, a.mode, a.frequency_hz, passband)
         mine = sum(1 for c in self._channels.values() if c.session == s.id)
         if mine >= MAX_CHANNELS_PER_SESSION:
             raise Rejected(ErrorCode.E_BUSY, f"this session already has {mine} channels "
@@ -559,7 +580,8 @@ class ControlCore:
         self._reserve_channel_cmd(s)
         n = next(self._channel_ids)
         ch = _Channel(id=f"ch_{n}", receiver=rt.id, session=s.id, worker_id=n,
-                      frequency_hz=a.frequency_hz, mode=a.mode)
+                      frequency_hz=a.frequency_hz, mode=a.mode, agc=a.agc, passband=passband,
+                      manual_gain_db=a.manual_gain_db)
         self._channels[ch.id] = ch
         rec = self._reply_ack(s, cmd.id, "accepted")
         self._spawn(self._finish_channel(s, rec, cmd.id, rt, ch, "open", rt.link.channel_open(
@@ -573,10 +595,20 @@ class ControlCore:
         rt = self._receiver(ch.receiver)
         mode = a.mode if a.mode is not None else ch.mode
         freq = a.frequency_hz if a.frequency_hz is not None else ch.frequency_hz
-        offset = self._check_channel_fits(rt, mode, freq)
+        # A custom passband belongs to its mode (USB 300..2700 is not an LSB filter): a mode change
+        # returns to the new mode's default unless the same command gives one.
+        if a.passband_default:
+            passband = None
+        elif a.passband_hz is not None:
+            passband = tuple(a.passband_hz)
+        else:
+            passband = ch.passband if mode == ch.mode else None
+        offset = self._check_channel_fits(rt, mode, freq, passband)
         self._reserve_channel_cmd(s)
         target = _Channel(id=ch.id, receiver=ch.receiver, session=ch.session, worker_id=ch.worker_id,
-                          frequency_hz=freq, mode=mode)
+                          frequency_hz=freq, mode=mode, agc=a.agc if a.agc is not None else ch.agc,
+                          passband=passband,
+                          manual_gain_db=a.manual_gain_db if a.manual_gain_db is not None else ch.manual_gain_db)
         rec = self._reply_ack(s, cmd.id, "accepted")
         self._spawn(self._finish_channel(s, rec, cmd.id, rt, target, "tune", rt.link.channel_tune(
             self._worker_channel(target, offset), rt.cfg.command_timeout)))
@@ -663,6 +695,8 @@ class ControlCore:
                                    detail=f"{ch.id} was closed before the {kind} completed", channel=ch.id)
                 return
             current.frequency_hz, current.mode = ch.frequency_hz, ch.mode
+            current.agc, current.passband, current.manual_gain_db = ch.agc, ch.passband, ch.manual_gain_db
+            current.applied_passband = self._applied_passband(ch.mode, ap)
             current.channel_gen, current.open = ap.channel_gen, True
             self._publish_channel(current)
             self._reply_result(rec, cmd_id, "applied", channel=ch.id, channel_gen=ap.channel_gen)
@@ -699,7 +733,8 @@ class ControlCore:
             for ch in [c for c in self._channels.values() if c.receiver == rt.id and c.open and not c.closing]:
                 center, rate, complex_iq = self._capture_now(rt)
                 problem = receiver_mode_problem(ch.mode, rate, complex_iq) or (
-                    span_problem(ch.mode, ch.frequency_hz, center, rate) if center is not None else "no centre")
+                    span_problem(ch.mode, ch.frequency_hz, center, rate, ch.passband)
+                    if center is not None else "no centre")
                 link = rt.link
                 if problem or link is None:
                     self._drop_channel(ch, tell_worker=not restarted)
@@ -713,6 +748,7 @@ class ControlCore:
                     continue
                 if self._channels.get(ch.id) is ch and not ch.closing:
                     ch.channel_gen = ap.channel_gen
+                    ch.applied_passband = self._applied_passband(ch.mode, ap)
                     self._publish_channel(ch)
 
     def _spawn(self, coro) -> None:

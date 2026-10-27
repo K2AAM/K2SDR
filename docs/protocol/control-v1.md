@@ -133,8 +133,19 @@ offset from the applied capture centre for the worker.
   removed from the state. After a worker restart, channels are opened again.
 - **Limits**: 4 channels per session and 16 per receiver (`E_BUSY`); at most 8 channel commands
   of one session waiting for the worker (`E_BUSY`, not recorded, like other capacity limits).
-- Passband, AGC and BFO use the mode defaults (`docs/design/M1-dsp.md`); controls for them
-  are a later addition.
+- **Listener controls** (M1 UI; `channel.open` and `channel.tune`):
+  - `agc`: "off" | "fast" | "medium" | "slow" (default medium). With "off", `manual_gain_db`
+    (0..100) is the fixed demodulator gain.
+  - `passband_hz`: `[low, high]`, integer Hz relative to the dial frequency
+    (|edge| ≤ 100 000, low < high). Absent on open means the mode's default. On tune,
+    `passband_default: true` returns to it. A mode change without a new `passband_hz` also
+    returns to the new mode's default, because a custom filter belongs to its mode.
+  - **Checks:** the span check uses the real passband. The worker also refuses edges beyond
+    the mode's channel bandwidth (`E_OUT_OF_RANGE` as the result).
+  - **State:** `channels.<id>` reports `agc`, `manual_gain_db`, `passband_default` and
+    `passband_hz`. The last is the worker's readback of the filter actually running.
+  - **Generations:** a change to any of these rebuilds the channel (new `channel_gen`). CW
+    pitch (BFO) stays at 700 Hz.
 - **Audio** of a channel goes to its owner only, as binary stream v1 messages on the same socket
   (`docs/protocol/stream-v1.md`).
 

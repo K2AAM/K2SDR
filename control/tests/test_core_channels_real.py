@@ -8,6 +8,7 @@ import asyncio
 from k2websdr.core.receiver import ReceiverConfig, replay_link_factory
 from k2websdr.core.service import ControlCore
 from k2websdr.protocol import models as m
+from k2websdr.protocol.errors import ErrorCode
 from k2websdr.protocol.frame import FrameKind
 from k2websdr.replay import sigmf
 
@@ -44,3 +45,43 @@ async def test_service_channel_drives_real_worker_audio(tmp_path):
         assert r.status == "applied"
     finally:
         await core.shutdown()
+
+
+RX = "wwv"
+
+
+async def _start():
+    import tempfile
+    lock_dir = __import__("pathlib").Path(tempfile.mkdtemp())
+    core = ControlCore(ledger=m.LedgerSummary(version=1, available=["am", "usb"]))
+    rt = core.add_receiver(ReceiverConfig(receiver_id=RX, label=RX, receiver_idx=0, recording=WWV,
+                                          paced=True, loop=True),
+                           replay_link_factory(WORKER_BIN, lock_dir))
+    await core.start()
+    return core, rt
+
+
+@async_test
+async def test_real_worker_runs_the_requested_passband_and_refuses_one_too_wide():
+    """The passband in the state is the worker's readback, and the audio carries it."""
+    core, rt = await _start()
+    c = Client(core, LISTENER)
+    await c.subscribe()
+    frames = []
+    rt.frame_listeners.append(lambda rid, h, p: frames.append(h))
+    ack, res = await c.outcome(await c.send("channel.open", receiver=RX, frequency_hz=10_000_000, mode="am",
+                                            passband_hz=[-3000, 3000], agc="slow"))
+    assert res.status == "applied", (ack, res)
+    st = c.mirror["channels"][res.channel]
+    assert (st["passband_hz"], st["agc"]) == ([-3000, 3000], "slow")
+    for _ in range(100):
+        if any(h.kind.name == "AUDIO" for h in frames):
+            break
+        await asyncio.sleep(0.02)
+    au = [h.audio_ext for h in frames if h.kind.name == "AUDIO"]
+    assert au and (au[-1].pass_lo_hz, au[-1].pass_hi_hz) == (-3000, 3000)
+    # AM's channel is 12 kS/s: +-5.7 kHz usable. +-9 kHz fits the capture span but not the channel.
+    ack, res = await c.outcome(await c.send("channel.open", receiver=RX, frequency_hz=10_000_000, mode="am",
+                                            passband_hz=[-9000, 9000]))
+    assert res.status == "failed" and res.code is ErrorCode.E_OUT_OF_RANGE
+    await core.shutdown()
