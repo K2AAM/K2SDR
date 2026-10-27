@@ -5,7 +5,8 @@ Plan: `docs/design/M1-first-live-receiver.md` §2 (H1–H8). Run by Adam on the 
 `tools/window1/run_window1.sh` from PR #14. That is the version **before** the review
 fixes in #15. Where that matters, it is noted below.
 
-Antenna and feedline: Adam's existing OpenWebRX antenna, unchanged. Gain settings were
+Antenna: Adam's existing OpenWebRX antenna, unchanged: a W6LVP amplified receiving loop
+(model name as understood from Adam, 2026-10-26). Gain settings were
 the library defaults throughout; none of the gain controls were changed (`-1` in every
 recording's description).
 
@@ -269,9 +270,15 @@ the WWV carrier peak-to-median within ±2 kHz:
 
 **Consequence:** on every open, the worker sets each control explicitly (sample rate,
 frequency, AGC, AGC threshold, attenuator, LNA, lib DSP) and reads none of them as
-"default". Proposed starting defaults, all configuration and reversible, for Adam to
-approve: AGC on, AGC threshold low, LNA on, attenuator 0 (it only acts with AGC off).
-Revisit them on MW, where overload is more likely.
+"default". **Starting defaults approved by Adam (2026-10-26):** AGC on, AGC threshold low,
+LNA on, attenuator 0 (it only acts with AGC off). They are configuration values and easy to
+change. Revisit them on MW, where overload is more likely.
+
+**Antenna dependence.** "Attenuation costs no SNR" holds because this antenna (W6LVP loop)
+delivers band noise well above the receiver's own. Adam is building an LZ1AQ loop (from
+2026-10-27). When it replaces the W6LVP, repeat the 1-minute H3 sweep (attenuator 0–8, LNA on/off
+against WWV, as in Window 1b) before trusting these conclusions or the defaults on it. H6
+(frequency) does not depend on the antenna, but its SNR-based usability does.
 
 ### H4: 10 minutes at 384 kS/s
 

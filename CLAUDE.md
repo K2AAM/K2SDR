@@ -56,6 +56,9 @@ invent features, or weaken explicit requirements unless Adam asks.
   Windows 1 and 1b ran 2026-10-26 (`docs/ops/airspyhf-measurements-2026-10-26.md`): H1–H8
   measured. Key facts: retune silently loses ~1490 samples @192k; stop/close hang after
   unplug; device settings persist across opens. Real clips in `fixtures/real/airspyhf/`.
+  Antenna: W6LVP loop; an LZ1AQ loop is planned (re-run the H3 gain sweep when it replaces it).
+  Approved gain defaults: AGC on, threshold low, LNA on, attenuator 0.
+  DSP: liquid-dsp 1.8.3 built without FFTW (`make liquid`, `docs/ops/liquid-dsp-1.8.3.md`).
   M1 branches: `m1/<topic>`.
 - Each block: branch `m0/<topic>` → PR → CI green → merge. Keep PRs reviewable.
 - Two Claude sessions may work on this repo: a cloud session (no LAN access)
