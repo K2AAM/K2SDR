@@ -9,7 +9,8 @@
       "commit": "86915038202fb273c13274420c7e882b32b19a0a",
       "blob": "ad85d5c7de124f0c125e5b045ada283a97acc1c9"
     },
-    "note": "Appendix is derived from upstream with default WSJT-X/JS8Call requirements made explicit. Upstream comparison: ledger/PROVENANCE.md."
+    "note": "Appendix is derived from upstream with default WSJT-X/JS8Call requirements made explicit. Upstream comparison: ledger/PROVENANCE.md.",
+    "integrations_from": "integrations.v1.json"
   },
   "entries": [
     {
@@ -18,14 +19,20 @@
       "kind": "mode",
       "required_feature": null,
       "family": null,
-      "status": "not_started",
-      "adapter": null,
-      "engine_version": null,
-      "supported_inputs": [],
+      "status": "integrated",
+      "adapter": "k2dsp:nfm",
+      "engine_version": "k2dsp (worker/src/dsp) + liquid-dsp 1.8.3",
+      "supported_inputs": [
+        "complex_iq"
+      ],
       "reference_sample": null,
-      "test_result": null,
+      "test_result": "control/tests/test_dsp_pipeline.py::test_nfm_and_wfm_demodulate",
       "live_validation": "none",
-      "limitations": []
+      "limitations": [
+        "Synthetic tests only so far",
+        "Needs a capture rate of at least 24 kS/s",
+        "Full scale at 5 kHz deviation, no de-emphasis"
+      ]
     },
     {
       "id": "wfm",
@@ -33,14 +40,20 @@
       "kind": "mode",
       "required_feature": null,
       "family": null,
-      "status": "not_started",
-      "adapter": null,
-      "engine_version": null,
-      "supported_inputs": [],
+      "status": "integrated",
+      "adapter": "k2dsp:wfm",
+      "engine_version": "k2dsp (worker/src/dsp) + liquid-dsp 1.8.3",
+      "supported_inputs": [
+        "complex_iq"
+      ],
       "reference_sample": null,
-      "test_result": null,
+      "test_result": "control/tests/test_dsp_pipeline.py::test_nfm_and_wfm_demodulate",
       "live_validation": "none",
-      "limitations": []
+      "limitations": [
+        "Synthetic tests only so far",
+        "Needs a capture rate of at least 192 kS/s (the Airspy HF+ offers 228k and up)",
+        "Mono, 75 us de-emphasis, audio flat to ~4.5 kHz at 12 kS/s"
+      ]
     },
     {
       "id": "am",
@@ -48,14 +61,20 @@
       "kind": "mode",
       "required_feature": null,
       "family": null,
-      "status": "not_started",
-      "adapter": null,
-      "engine_version": null,
-      "supported_inputs": [],
-      "reference_sample": null,
-      "test_result": null,
-      "live_validation": "none",
-      "limitations": []
+      "status": "integrated",
+      "adapter": "k2dsp:am",
+      "engine_version": "k2dsp (worker/src/dsp) + liquid-dsp 1.8.3",
+      "supported_inputs": [
+        "complex_iq"
+      ],
+      "reference_sample": "fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta",
+      "test_result": "control/tests/test_dsp_pipeline.py::test_golden_am_on_real_wwv, test_worker_dsp.py::test_am_channel_on_real_wwv_streams_12k_audio_with_metadata",
+      "live_validation": "recorded",
+      "limitations": [
+        "Audio at 12 kS/s, flat to ~4.5 kHz",
+        "Envelope detector (no synchronous AM)",
+        "Needs a capture rate of at least 12 kS/s and the passband inside the capture span"
+      ]
     },
     {
       "id": "lsb",
@@ -63,14 +82,19 @@
       "kind": "mode",
       "required_feature": null,
       "family": null,
-      "status": "not_started",
-      "adapter": null,
-      "engine_version": null,
-      "supported_inputs": [],
+      "status": "integrated",
+      "adapter": "k2dsp:lsb",
+      "engine_version": "k2dsp (worker/src/dsp) + liquid-dsp 1.8.3",
+      "supported_inputs": [
+        "complex_iq"
+      ],
       "reference_sample": null,
-      "test_result": null,
+      "test_result": "control/tests/test_dsp_pipeline.py::test_sideband_and_out_of_channel_rejection, test_each_mode_hears_its_signal",
       "live_validation": "none",
-      "limitations": []
+      "limitations": [
+        "Synthetic tests only so far",
+        "Default passband -2700..-300 Hz"
+      ]
     },
     {
       "id": "usb",
@@ -78,14 +102,19 @@
       "kind": "mode",
       "required_feature": null,
       "family": null,
-      "status": "not_started",
-      "adapter": null,
-      "engine_version": null,
-      "supported_inputs": [],
-      "reference_sample": null,
-      "test_result": null,
-      "live_validation": "none",
-      "limitations": []
+      "status": "integrated",
+      "adapter": "k2dsp:usb",
+      "engine_version": "k2dsp (worker/src/dsp) + liquid-dsp 1.8.3",
+      "supported_inputs": [
+        "complex_iq"
+      ],
+      "reference_sample": "fixtures/real/airspyhf/airspyhf_ft8_40m_48k.sigmf-meta",
+      "test_result": "control/tests/test_dsp_pipeline.py::test_golden_usb_on_real_ft8_has_energy_at_the_decoded_offsets, test_worker_dsp.py::test_two_channels_are_independent_and_ordered_by_id",
+      "live_validation": "recorded",
+      "limitations": [
+        "Audio at 12 kS/s, flat to ~4.5 kHz",
+        "Default passband 300-2700 Hz"
+      ]
     },
     {
       "id": "cw",
@@ -93,14 +122,19 @@
       "kind": "mode",
       "required_feature": null,
       "family": null,
-      "status": "not_started",
-      "adapter": null,
-      "engine_version": null,
-      "supported_inputs": [],
+      "status": "integrated",
+      "adapter": "k2dsp:cw",
+      "engine_version": "k2dsp (worker/src/dsp) + liquid-dsp 1.8.3",
+      "supported_inputs": [
+        "complex_iq"
+      ],
       "reference_sample": null,
-      "test_result": null,
+      "test_result": "control/tests/test_dsp_pipeline.py::test_cw_pitch_follows_bfo_and_narrow_filter_rejects_neighbours",
       "live_validation": "none",
-      "limitations": []
+      "limitations": [
+        "Synthetic tests only so far",
+        "Default 500 Hz filter, 700 Hz pitch"
+      ]
     },
     {
       "id": "sam",

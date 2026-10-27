@@ -24,8 +24,10 @@ from ..decoders.gate import GenerationGate
 from ..protocol import models as m
 from ..protocol.decoder import DecoderEvent
 from ..protocol.errors import ErrorCode
+from ..protocol import worker_ctl as wc
 from .lease import Holder, LeaseError
-from .receiver import ReceiverConfig, ReceiverRuntime
+from .modes import WORKER_MODES, receiver_mode_problem, span_problem
+from .receiver import WORKER_RESULT_TO_CODE, ReceiverConfig, ReceiverRuntime
 from .store import StateStore
 
 IDEMPOTENCY_TTL = 600.0
@@ -33,6 +35,9 @@ IDEMPOTENCY_TTL = 600.0
 MAX_CMD_RECORDS = 10_000      # total idempotency records: in-flight + finished
 MAX_IN_FLIGHT = 1_000         # accepted hardware commands not yet finished, all receivers
 RECEIVER_QUEUE_LIMIT = 64     # per receiver: executing + queued hardware commands
+# Listener channels (see docs/protocol/control-v1.md, "Channels"):
+MAX_CHANNELS_PER_SESSION = 4
+MAX_CHANNEL_CMDS_PER_SESSION = 8   # channel commands of one session waiting for the worker
 
 
 @dataclass(frozen=True)
@@ -74,6 +79,21 @@ class _CmdRecord:
         return self.finished is None
 
 
+@dataclass
+class _Channel:
+    """A listener channel. Present from acceptance of channel.open (so it counts against the
+    limits); in the published state only once the worker has applied it."""
+    id: str
+    receiver: str
+    session: str
+    worker_id: int
+    frequency_hz: int
+    mode: str
+    channel_gen: int = 0
+    open: bool = False                # worker has applied it
+    closing: bool = False
+
+
 class Rejected(Exception):
     def __init__(self, code: ErrorCode, detail: str) -> None:
         super().__init__(detail)
@@ -111,6 +131,10 @@ class ControlCore:
         self._cmds: dict[tuple[str, str], _CmdRecord] = {}
         self._tasks: set[asyncio.Task] = set()
         self._job_ids = itertools.count(1)
+        self._channels: dict[str, _Channel] = {}
+        self._channel_ids = itertools.count(1)
+        self._channel_cmds: dict[str, int] = {}          # session id -> channel commands in flight
+        self._reconcile_locks: dict[str, asyncio.Lock] = {}
         self.decoder_sink: list[DecoderEvent] = []
         self.store.subscribe(self._broadcast)
 
@@ -120,6 +144,7 @@ class ControlCore:
             raise ValueError(f"duplicate receiver {cfg.receiver_id}")
         rt = ReceiverRuntime(cfg, self.store, self.gate, link_factory)
         rt.lease.on_preempt(lambda prev, new, rid=cfg.receiver_id: self._on_preempt(rid, prev, new))
+        rt.on_capture_change = lambda r, restarted: self._spawn(self._reconcile_channels(r, restarted))
         with self.store.txn() as t:
             t.add("receivers", cfg.receiver_id, value=rt.initial_state())
         self.receivers[cfg.receiver_id] = rt
@@ -149,6 +174,8 @@ class ControlCore:
         for rt in self.receivers.values():
             if rt.lease.release_session(s.id):
                 rt.publish_lease()
+        for ch in [c for c in self._channels.values() if c.session == s.id]:
+            self._drop_channel(ch, tell_worker=True)
 
     def _broadcast(self, patch: m.Patch) -> None:
         for s in list(self.sessions.values()):
@@ -200,9 +227,11 @@ class ControlCore:
         return rec
 
     def _reply_result(self, rec: _CmdRecord, cmd_id: str, status: str, *, code: ErrorCode | None = None,
-                      detail: str | None = None, capture_gen: int | None = None) -> None:
+                      detail: str | None = None, capture_gen: int | None = None, channel: str | None = None,
+                      channel_gen: int | None = None) -> None:
         rec.result = m.Result(v=1, type="result", id=cmd_id, status=status, code=code, detail=detail,
-                              rev=self.store.rev, capture_gen=capture_gen)
+                              rev=self.store.rev, capture_gen=capture_gen, channel=channel,
+                              channel_gen=channel_gen)
         rec.finished = time.monotonic()
         for sid in rec.sessions:
             sess = self.sessions.get(sid)
@@ -327,17 +356,209 @@ class ControlCore:
         # No worker message for antennas exists before M2 hardware work.
         raise Rejected(ErrorCode.E_UNSUPPORTED, "antenna switching is not implemented before M2")
 
+    # ----- listener channels
+    def _capture_now(self, rt: ReceiverRuntime) -> tuple[int | None, int | None, bool]:
+        """(applied center, applied rate, complex IQ) of a receiver."""
+        st = self.store.view()["receivers"][rt.id]
+        return (st["capture"]["center_hz"]["applied"], st["capture"]["sample_rate_hz"]["applied"],
+                st["capabilities"]["sample_format"] in ("ci16", "cf32"))
+
+    def _check_channel_fits(self, rt: ReceiverRuntime, mode: str, frequency_hz: int) -> int:
+        """Mode availability (ledger + this receiver) and span. Returns the offset from the centre."""
+        if mode not in self.store.view()["ledger"]["available"]:
+            raise Rejected(ErrorCode.E_MODE_UNAVAILABLE, f"mode {mode} is not available")
+        if self.store.view()["receivers"][rt.id]["acquisition"]["state"] != "running" or rt.link is None:
+            raise Rejected(ErrorCode.E_DEVICE_FAILED, f"{rt.id} is not running")
+        center, rate, complex_iq = self._capture_now(rt)
+        problem = receiver_mode_problem(mode, rate, complex_iq)
+        if problem:
+            raise Rejected(ErrorCode.E_MODE_UNAVAILABLE, problem)
+        if center is None:
+            raise Rejected(ErrorCode.E_DEVICE_FAILED, f"{rt.id} has no applied centre frequency yet")
+        problem = span_problem(mode, frequency_hz, center, rate)
+        if problem:
+            raise Rejected(ErrorCode.E_OUT_OF_RANGE, problem)
+        return frequency_hz - center
+
+    @staticmethod
+    def _worker_channel(ch: _Channel, offset_hz: int) -> wc.Channel:
+        # M1: mode defaults for passband/BFO, medium AGC; listener controls for these come later.
+        return wc.Channel(ch.worker_id, WORKER_MODES[ch.mode].worker, wc.Agc.MEDIUM, offset_hz)
+
+    def _owned_channel(self, s: Session, cid: str) -> _Channel:
+        ch = self._channels.get(cid)
+        if ch is None or ch.closing:
+            raise Rejected(ErrorCode.E_UNKNOWN_CHANNEL, f"no channel {cid}")
+        if ch.session != s.id:
+            raise Rejected(ErrorCode.E_FORBIDDEN, f"{cid} belongs to another session")
+        if not ch.open:
+            raise Rejected(ErrorCode.E_BUSY, f"{cid} is still opening")
+        return ch
+
+    def _reserve_channel_cmd(self, s: Session) -> None:
+        n = self._channel_cmds.get(s.id, 0)
+        if n >= MAX_CHANNEL_CMDS_PER_SESSION:
+            raise CapacityRejected(f"{n} channel commands of this session are still in progress "
+                                   f"(limit {MAX_CHANNEL_CMDS_PER_SESSION}); retry after some complete")
+        self._channel_cmds[s.id] = n + 1
+
+    def _release_channel_cmd(self, sid: str) -> None:
+        n = self._channel_cmds.get(sid, 0) - 1
+        if n > 0:
+            self._channel_cmds[sid] = n
+        else:
+            self._channel_cmds.pop(sid, None)
+
+    def _publish_channel(self, ch: _Channel) -> None:
+        with self.store.txn() as t:
+            value = m.ChannelState(receiver=ch.receiver, owner=m.ChannelOwner(session=ch.session),
+                                   frequency_hz=ch.frequency_hz, mode=ch.mode, channel_gen=ch.channel_gen)
+            if ch.id in self.store.view()["channels"]:
+                t.replace("channels", ch.id, value=value)
+            else:
+                t.add("channels", ch.id, value=value)
+
+    def _drop_channel(self, ch: _Channel, *, tell_worker: bool) -> None:
+        """Remove from registry and state now; optionally tell the worker (best effort)."""
+        ch.closing = True
+        self._channels.pop(ch.id, None)
+        if ch.id in self.store.view()["channels"]:
+            with self.store.txn() as t:
+                t.remove("channels", ch.id)
+        rt = self.receivers.get(ch.receiver)
+        if tell_worker and ch.open and rt is not None and rt.link is not None:
+            self._spawn(self._quiet(rt.link.channel_close(ch.worker_id, rt.cfg.command_timeout)))
+
+    @staticmethod
+    async def _quiet(coro) -> None:
+        from ..devices.worker_client import WorkerError
+        try:
+            await coro
+        except WorkerError:
+            pass
+
     async def _op_channel_open(self, s: Session, cmd: m.ChannelOpen) -> None:
-        self._receiver(cmd.args.receiver)
-        if cmd.args.mode not in self.store.view()["ledger"]["available"]:
-            raise Rejected(ErrorCode.E_MODE_UNAVAILABLE, f"mode {cmd.args.mode} is not available")
-        raise Rejected(ErrorCode.E_UNSUPPORTED, "channels are not implemented before M1")
+        a = cmd.args
+        rt = self._receiver(a.receiver)
+        offset = self._check_channel_fits(rt, a.mode, a.frequency_hz)
+        mine = sum(1 for c in self._channels.values() if c.session == s.id)
+        if mine >= MAX_CHANNELS_PER_SESSION:
+            raise Rejected(ErrorCode.E_BUSY, f"this session already has {mine} channels "
+                                             f"(limit {MAX_CHANNELS_PER_SESSION})")
+        on_rx = sum(1 for c in self._channels.values() if c.receiver == rt.id)
+        if on_rx >= wc.MAX_CHANNELS:
+            raise Rejected(ErrorCode.E_BUSY, f"{rt.id} already has {on_rx} channels (limit {wc.MAX_CHANNELS})")
+        self._reserve_channel_cmd(s)
+        n = next(self._channel_ids)
+        ch = _Channel(id=f"ch_{n}", receiver=rt.id, session=s.id, worker_id=n,
+                      frequency_hz=a.frequency_hz, mode=a.mode)
+        self._channels[ch.id] = ch
+        rec = self._reply_ack(s, cmd.id, "accepted")
+        self._spawn(self._finish_channel(s, rec, cmd.id, rt, ch, "open", rt.link.channel_open(
+            self._worker_channel(ch, offset), rt.cfg.command_timeout)))
 
     async def _op_channel_tune(self, s: Session, cmd: m.ChannelTune) -> None:
-        raise Rejected(ErrorCode.E_UNKNOWN_CHANNEL, f"no channel {cmd.args.channel}")
+        a = cmd.args
+        ch = self._owned_channel(s, a.channel)
+        if a.if_channel_gen is not None and a.if_channel_gen != ch.channel_gen:
+            raise Rejected(ErrorCode.E_STALE_PRECONDITION, f"channel_gen is {ch.channel_gen}, not {a.if_channel_gen}")
+        rt = self._receiver(ch.receiver)
+        mode = a.mode if a.mode is not None else ch.mode
+        freq = a.frequency_hz if a.frequency_hz is not None else ch.frequency_hz
+        offset = self._check_channel_fits(rt, mode, freq)
+        self._reserve_channel_cmd(s)
+        target = _Channel(id=ch.id, receiver=ch.receiver, session=ch.session, worker_id=ch.worker_id,
+                          frequency_hz=freq, mode=mode)
+        rec = self._reply_ack(s, cmd.id, "accepted")
+        self._spawn(self._finish_channel(s, rec, cmd.id, rt, target, "tune", rt.link.channel_tune(
+            self._worker_channel(target, offset), rt.cfg.command_timeout)))
 
     async def _op_channel_close(self, s: Session, cmd: m.ChannelClose) -> None:
-        raise Rejected(ErrorCode.E_UNKNOWN_CHANNEL, f"no channel {cmd.args.channel}")
+        ch = self._owned_channel(s, cmd.args.channel)
+        rt = self._receiver(ch.receiver)
+        self._reserve_channel_cmd(s)
+        self._drop_channel(ch, tell_worker=False)
+        rec = self._reply_ack(s, cmd.id, "accepted")
+        link = rt.link
+        coro = link.channel_close(ch.worker_id, rt.cfg.command_timeout) if link is not None else None
+        self._spawn(self._finish_channel(s, rec, cmd.id, rt, ch, "close", coro))
+
+    async def _finish_channel(self, s: Session, rec: _CmdRecord, cmd_id: str, rt: ReceiverRuntime, ch: _Channel,
+                              kind: str, coro) -> None:
+        """Await the worker's CHANNEL_APPLIED and give the command its single result."""
+        from ..devices.worker_client import WorkerFailed, WorkerGone, WorkerRejected, WorkerTimeout
+        key = (s.principal.user, cmd_id)
+        try:
+            try:
+                ap: wc.ChannelApplied | None = await coro if coro is not None else None
+            except (WorkerRejected, WorkerFailed) as e:
+                if kind == "close" and e.result is wc.Result.E_NOT_FOUND:
+                    ap = None                         # already gone in the worker (e.g. restarted)
+                else:
+                    raise
+            if kind == "close":
+                self._reply_result(rec, cmd_id, "applied", channel=ch.id, channel_gen=ch.channel_gen)
+                return
+            current = self._channels.get(ch.id)
+            if current is None or current.closing:
+                # Closed (or its session ended) while the worker was applying: undo in the worker.
+                if rt.link is not None and ap is not None and ap.open:
+                    self._spawn(self._quiet(rt.link.channel_close(ch.worker_id, rt.cfg.command_timeout)))
+                self._reply_result(rec, cmd_id, "failed", code=ErrorCode.E_UNKNOWN_CHANNEL,
+                                   detail=f"{ch.id} was closed before the {kind} completed", channel=ch.id)
+                return
+            current.frequency_hz, current.mode = ch.frequency_hz, ch.mode
+            current.channel_gen, current.open = ap.channel_gen, True
+            self._publish_channel(current)
+            self._reply_result(rec, cmd_id, "applied", channel=ch.id, channel_gen=ap.channel_gen)
+        except (WorkerRejected, WorkerFailed) as e:
+            self._channel_failed(rec, cmd_id, ch, kind, WORKER_RESULT_TO_CODE.get(e.result, ErrorCode.E_INTERNAL),
+                                 f"worker refused: {e.result.name}")
+        except WorkerTimeout:
+            self._channel_failed(rec, cmd_id, ch, kind, ErrorCode.E_TIMEOUT, "worker did not answer")
+        except WorkerGone:
+            self._channel_failed(rec, cmd_id, ch, kind, ErrorCode.E_DEVICE_FAILED, "receiver worker is not running")
+        finally:
+            self._release_channel_cmd(s.id)
+            self._expire_cmds()
+
+    def _channel_failed(self, rec: _CmdRecord, cmd_id: str, ch: _Channel, kind: str, code: ErrorCode,
+                        detail: str) -> None:
+        if kind == "open":
+            existing = self._channels.get(ch.id)
+            if existing is not None and not existing.open:
+                self._channels.pop(ch.id, None)       # never applied: release its slot
+        self._reply_result(rec, cmd_id, "failed", code=code, detail=detail, channel=ch.id)
+
+    async def _reconcile_channels(self, rt: ReceiverRuntime, restarted: bool) -> None:
+        """Keep every channel of a receiver on its absolute frequency after the capture changed.
+
+        restarted: the worker is new and has no channels: open them again. Otherwise re-send each
+        channel's config with the offset from the new centre (the worker rebuilt them on
+        re-acquisition; this also yields the new channel_gen). A channel that no longer fits the
+        capture is closed and removed from the state.
+        """
+        lock = self._reconcile_locks.setdefault(rt.id, asyncio.Lock())
+        async with lock:
+            from ..devices.worker_client import WorkerError
+            for ch in [c for c in self._channels.values() if c.receiver == rt.id and c.open and not c.closing]:
+                center, rate, complex_iq = self._capture_now(rt)
+                problem = receiver_mode_problem(ch.mode, rate, complex_iq) or (
+                    span_problem(ch.mode, ch.frequency_hz, center, rate) if center is not None else "no centre")
+                link = rt.link
+                if problem or link is None:
+                    self._drop_channel(ch, tell_worker=not restarted)
+                    continue
+                wch = self._worker_channel(ch, ch.frequency_hz - center)
+                try:
+                    ap = await (link.channel_open(wch, rt.cfg.command_timeout) if restarted
+                                else link.channel_tune(wch, rt.cfg.command_timeout))
+                except WorkerError:
+                    self._drop_channel(ch, tell_worker=False)
+                    continue
+                if self._channels.get(ch.id) is ch and not ch.closing:
+                    ch.channel_gen = ap.channel_gen
+                    self._publish_channel(ch)
 
     def _spawn(self, coro) -> None:
         t = asyncio.get_running_loop().create_task(coro)

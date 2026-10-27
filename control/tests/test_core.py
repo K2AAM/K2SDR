@@ -356,7 +356,7 @@ async def test_commands_refused_while_acquisition_not_running():
 
 
 @async_test
-async def test_no_mode_is_available_in_m0():
+async def test_mode_missing_from_the_ledger_is_unavailable():
     core, rt = await make()
     c = Client(core)
     ack, _ = await c.outcome(await c.send("channel.open", receiver=RX, frequency_hz=CENTER, mode="usb"))

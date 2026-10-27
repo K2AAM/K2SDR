@@ -3,8 +3,9 @@
 
     python3 tools/import_ledger.py docs/outline/WebSDR_Project_Outline-v0.1.md ledger/modes.v1.json
 
-Data only: every entry starts not_started / unavailable. Nothing here implies
-an adapter exists. Output is deterministic.
+Every entry starts not_started / unavailable from the outline appendix. Integrations are then
+merged from the hand-maintained, reviewed overlay ledger/integrations.v1.json (path relative to
+the output file), which may set only the integration fields below. Output is deterministic.
 """
 
 from __future__ import annotations
@@ -61,8 +62,31 @@ def build(src: Path) -> dict:
     }
 
 
-def render(src: Path) -> str:
-    return json.dumps(build(src), indent=2, ensure_ascii=False) + "\n"
+OVERLAY_FIELDS = {"status", "adapter", "engine_version", "supported_inputs", "reference_sample", "test_result",
+                  "live_validation", "limitations"}
+
+
+def merge_integrations(ledger: dict, overlay_path: Path) -> dict:
+    if not overlay_path.exists():
+        return ledger
+    ov = json.loads(overlay_path.read_text("utf-8"))
+    if ov.get("integrations_version") != 1:
+        raise SystemExit(f"{overlay_path}: integrations_version must be 1")
+    by_id = {e["id"]: e for e in ledger["entries"]}
+    for mid, fields in sorted(ov["entries"].items()):
+        if mid not in by_id:
+            raise SystemExit(f"{overlay_path}: {mid} is not in the baseline ledger")
+        extra = set(fields) - OVERLAY_FIELDS
+        if extra:
+            raise SystemExit(f"{overlay_path}: {mid}: fields not allowed in the overlay: {sorted(extra)}")
+        by_id[mid].update(fields)
+    ledger["provenance"]["integrations_from"] = overlay_path.name
+    return ledger
+
+
+def render(src: Path, dst: Path) -> str:
+    led = merge_integrations(build(src), dst.parent / "integrations.v1.json")
+    return json.dumps(led, indent=2, ensure_ascii=False) + "\n"
 
 
 def main(argv: list[str]) -> int:
@@ -71,13 +95,13 @@ def main(argv: list[str]) -> int:
         return 64
     if argv[1] == "--check":
         src, dst = Path(argv[2]), Path(argv[3])
-        if not dst.exists() or dst.read_text("utf-8") != render(src):
+        if not dst.exists() or dst.read_text("utf-8") != render(src, dst):
             print(f"{dst} differs from the outline appendix; run: make ledger", file=sys.stderr)
             return 1
         print(f"{dst} is current")
         return 0
     src, dst = Path(argv[1]), Path(argv[2])
-    dst.write_text(render(src), encoding="utf-8")
+    dst.write_text(render(src, dst), encoding="utf-8")
     print(f"wrote {dst}")
     return 0
 
