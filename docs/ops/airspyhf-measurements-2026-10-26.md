@@ -19,11 +19,11 @@ Raw results stay on the Optiplex in `~/K2SDR/window1-results/20261026-181353/`
 |---|---|---|
 | H1 versions | **measured** | libairspyhf 1.6.8 (header and runtime), firmware `R5.0.1-CD`, part id 2, serial `3B52978026BA46DA` |
 | H2 rates | **measured** | 912, 768, 650, 456, 384, 228, 192 kS/s. `is_low_if` is 1 at ≤ 650 kS/s and 0 at 768/912. Output block 2048 samples at every rate |
-| H3 gain controls | **not measured** | Library defaults only. Still open |
-| H4 sustained streaming | **measured (partly)** | 0 dropped samples in 60 s at every rate and in 10 min at 768 kS/s. The plan asked for 10 min per *candidate* rate |
-| H5 retune | **measured (partly)** | No tuning transient detectable at 1 ms resolution. The switch lands 1.3–12.5 ms after the call-time sample count (one USB block of uncertainty). Whether samples are lost is open |
+| H3 gain controls | **measured (1b)** | Attenuator about 5 dB per step (41 dB over 0–8). WWV SNR unchanged (48–51 dB): the antenna noise dominates. LNA +8 dB level, +1 dB SNR. AGC overrides the attenuator. **Settings persist in the device across opens** |
+| H4 sustained streaming | **measured** | 0 dropped samples in 60 s at every rate, 10 min at 768k and 10 min at 384k (1b: 2.7 % CPU, longest gap 6.2 ms) |
+| H5 retune | **measured** | No tuning transient detectable at 1 ms resolution. **Every retune silently loses about 1490 samples (7.8 ms at 192k)**; the library reports 0. The switch lands 1.3–12.5 ms after the call-time sample count |
 | H6 frequency accuracy | **measured** | −0.089 ppm at 10 MHz, −0.076 ppm at 15 MHz (WWV). Stored calibration 0 ppb. CHU too weak |
-| H7 unplug | **not measured** | The cable was not pulled during the test (samples kept arriving at full rate). Still open |
+| H7 unplug | **measured (1b)** | `is_streaming` goes to 0 within about 1 s. **`airspyhf_stop`/`close` then hang**: Ctrl+C did not end the process; SIGQUIT did. Replug and reopen work (8 ms) |
 | H8 recordings | **measured** | 7 recordings, 0 drops. 3 clips committed. FT8 clip decodes 22 messages |
 | Busy device | **measured** | With OpenWebRX holding it, `open_sn` returns −1 in about 1 ms. Adam heard no audio glitch |
 
@@ -166,19 +166,122 @@ temporary ports. Adam confirmed the audio worked.
 ## Consequences for M1
 
 1. Pick the capture rate from the low-IF set (≤ 650 kS/s) unless a band plan needs
-   more. CPU is about 4× lower. Default candidate: 384 or 456 kS/s. Confirm with a
-   10 min run at that rate (Window 1b or 2).
-2. After every retune, discard a fixed number of samples, at least 2 blocks (4096
-   samples). Do not rely on the call-time index. Size this finally after the Window 1b
-   timing measurement.
+   more. CPU is about 4× lower. 384 kS/s is confirmed clean for 10 min (Window 1b).
+2. Every retune starts a new generation. Samples are silently lost (Window 1b: about
+   1490 at 192k), and the switch lands up to about one block after the call-time index.
+   Discard at least 2 blocks after the retune and never infer timing across it.
 3. No calibration correction yet (H6). Show "uncalibrated, measured ≈ −0.08 ppm" in the
    UI when calibration lands.
 4. The busy-device error path is a fast, harmless open failure.
+5. On device loss, exit without calling `airspyhf_stop`/`close` (they hang); the
+   supervisor restarts the worker.
+6. Set every control explicitly on open; device state persists between processes.
 
-## Window 1b (proposed, about 10 minutes, OpenWebRX stopped)
+## Window 1b — 2026-10-26, 23:42–23:55 UTC
 
-- H7: the unplug test, done properly.
-- H5: retune with per-callback timing (needs a small probe addition: `--timing-log`).
-- H4: 10 min at the chosen low-IF default rate.
-- H3: a short sweep of the HF attenuator 0–8 and the LNA on/off against WWV, to set the
-  gain defaults.
+Run by hand in Adam's server room, with OpenWebRX stopped. Commands are in the session
+notes. The probe came from `main` after #15, and the retune timing from branch
+`m1/window1b-timing` (`--timing-log`, `tools/window1/timing.py`). Raw files are in
+`~/K2SDR/window1-results/1b/` on the Optiplex.
+
+### H7: unplug
+
+At 768 kS/s Adam pulled the cable at about t = 11 s. The next one-second tick (t = 12.1 s)
+showed `streaming: 0`, and the probe reported `streaming_stopped` and left its loop. It
+then **hung** in `airspyhf_stop()`/`airspyhf_close()`. Ctrl+C had no effect (the signal
+handler only sets a flag the loop has already stopped checking), and SIGQUIT (Ctrl+\)
+ended it with exit 131. After replugging, `busy-check` opened the device in 8.2 ms.
+
+**Consequence:** the acquisition worker must never block on `airspyhf_stop`/`close` after
+device loss. On loss it reports the error over its control socket and exits
+(`_exit`) without calling them. The supervisor (control service) restarts it, and the
+OS releases USB when the process ends. Any stop/close on the normal path needs a
+watchdog. Detection latency was ≤ 1 s here, limited by the probe's 1 s polling; the
+worker can poll `is_streaming` faster and also watch the callback cadence.
+
+### H5: samples lost on retune
+
+7 retunes, alternating 10.005 / 15.005 MHz at 3 s intervals, 192 kS/s. For each one,
+samples-delivered-against-host-time was fitted on the roughly 85 callbacks either side
+(guard ±0.1 s):
+
+| retune | lost samples | lost ms | ±1σ | library drops | longest callback gap |
+|---|---|---|---|---|---|
+| 1 | 1480 | 7.71 | 4 | 0 | 18.5 ms |
+| 2 | 1474 | 7.68 | 3 | 0 | 18.4 ms |
+| 3 | 1481 | 7.72 | 4 | 0 | 18.5 ms |
+| 4 | 1484 | 7.73 | 4 | 0 | 18.5 ms |
+| 5 | 1514 | 7.89 | 5 | 0 | 18.5 ms |
+| 6 | 1510 | 7.86 | 4 | 0 | 18.3 ms |
+| 7 | 1493 | 7.77 | 3 | 0 | 18.5 ms |
+
+The fitted rates before and after agree with each other and with 192000 to within
+±40 Hz, so the offset is not a clock effect.
+
+**It is lost, not delayed.** Over the whole run the shortfall is 192000 × 24.01 −
+4 583 424 = 26 496 samples. That equals the start-up delay (about 85 ms, about 16 300
+samples, the same as in Window 1) plus 7 × about 1490. A pure added latency could not
+accumulate like that.
+
+Measured at 192 kS/s only. Whether the loss is fixed in samples or in time across
+rates is not known; measure it at the chosen default rate before relying on a number.
+
+**Consequence:** a retune is a discontinuity of unknown exact length, and the driver
+does not report it. The worker starts a new capture generation on every retune (the
+frame protocol already restarts `first_sample_index` per generation). It never carries
+sample-count timing across a retune; it re-anchors `host_time_ns` per generation. It
+discards the first ≥ 2 blocks after the step (H5 step location above). The earlier
+coarse estimates (about 4000 from per-second ticks, 5–6 ms from totals) are superseded.
+
+### H3: gain controls
+
+10.005 MHz, 192 kS/s, 5 s each, in this order. Levels are mean power in dBFS; SNR is
+the WWV carrier peak-to-median within ±2 kHz:
+
+| run | set by the probe | rms dBFS | peak (full scale = 1) | WWV SNR |
+|---|---|---|---|---|
+| att0 | agc 0, att 0 | −28.6 | 0.075 | 51.3 dB |
+| att2 | agc 0, att 2 | −35.3 | 0.042 | 47.8 dB |
+| att4 | agc 0, att 4 | −46.3 | 0.009 | 51.3 dB |
+| att6 | agc 0, att 6 | −56.9 | 0.003 | 50.0 dB |
+| att8 | agc 0, att 8 | −70.0 | 0.001 | 48.5 dB |
+| lna0 | agc 0, lna 0 | −80.9 | 0.000 | 48.4 dB |
+| lna1 | agc 0, lna 1 | −73.0 | 0.000 | 49.6 dB |
+| agc0 | agc 0 | −78.2 | 0.000 | 42.0 dB |
+| agc1 | agc 1 | −29.1 | 0.077 | 48.4 dB |
+
+- **The attenuator works, at about 5 dB per step** (41 dB over 0–8; fading between the
+  5 s runs blurs individual steps). SNR does not change: on this antenna at 10 MHz the
+  received band noise is well above the receiver's own noise even at index 8. So
+  attenuation is free here and is the tool against overload.
+- **Settings persist in the device between opens.** The lna and agc runs did not set
+  `hf_att`, yet their levels (−73 to −81 dBFS) sit with att8 (−70), the value the
+  previous process had set, not with att0. Inferred from levels, consistent across four
+  runs. It also means Window 1 ran with **whatever OpenWebRX had last set**, so the
+  "library default (−1)" in those recordings is unknown, not a default.
+- **LNA:** +7.9 dB of level, +1.2 dB of SNR (within run-to-run fading). No meaningful
+  SNR gain at 10 MHz on this antenna.
+- **AGC on** overrides the attenuator: with att still 8 from earlier, agc1 came back
+  to −29 dBFS (≈ att0).
+- Headroom: even at att0/AGC the peaks are 0.077 of full scale at 10 MHz in the
+  evening. Overload is more likely on MW and the broadcast bands. That is not measured
+  here.
+
+**Consequence:** on every open, the worker sets each control explicitly (sample rate,
+frequency, AGC, AGC threshold, attenuator, LNA, lib DSP) and reads none of them as
+"default". Proposed starting defaults, all configuration and reversible, for Adam to
+approve: AGC on, AGC threshold low, LNA on, attenuator 0 (it only acts with AGC off).
+Revisit them on MW, where overload is more likely.
+
+### H4: 10 minutes at 384 kS/s
+
+7.100 MHz, 600 s: 230 371 328 samples, **0 dropped**, longest callback gap 6.2 ms,
+**2.7 % of one core**.
+
+## Status after Window 1b
+
+H1–H8 are all measured, with the noted limits: H6 needs more sessions before it becomes
+a calibration value, and the H5 loss is measured at 192 kS/s only. That is enough to
+start the M1 acquisition source on real hardware assumptions: low-IF default rate, a
+generation per retune with a discard, bounded exit on device loss, and explicit control
+settings on every open.
