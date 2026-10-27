@@ -179,6 +179,38 @@ doubling to 30 s, and resets after a worker ran for 60 s.
   `channel_gen`).
 - **Replay receivers** keep the M0 policy: at most 3 restarts.
 
+## Recordings (M1, design §3.6)
+
+`recording.start {receiver, frequency_hz, mode, agc?, passband_hz?, manual_gain_db?}` and
+`recording.stop {recording}` (permission `record`).
+
+- **What is recorded:** the clean demodulated audio (12 kS/s mono int16, exactly as the worker
+  made it, before anything a browser does).
+- **Its own channel:** a recording runs on a **server-owned channel**
+  (`channels.<id>.owner.job`), so it keeps going when the browser is suspended or closed. It
+  runs until stopped by its owner (any session of the same user) or an admin. It also ends when
+  storage runs out, or when a receiver retune leaves its frequency outside the capture
+  (`interrupted`). At most 4 per user.
+- **Result:** `result.recording` and `result.channel`. While active, `recordings.<id>` shows
+  frequency, mode, file, seconds, bytes and gaps (discontinuities inside the file), updated
+  about once a second.
+- **Filename:** `<UTC>_<frequency_hz>_<mode>.wav`, e.g. `20261027T183000Z_7074000_usb.wav`.
+  The same integer Hz is in the state and the catalog (B5). The WAV header is rewritten every
+  5 s, so a file is playable even after a crash.
+- **Storage:** `storage {used_bytes, cap_bytes, free_bytes, full, detail}`.
+  - Config sets the cap: `recordings_cap_bytes` (default 2 GiB) and
+    `recordings_min_free_bytes` (default 512 MiB).
+  - When either is reached, new recordings are refused (`E_STORAGE_FULL`) and active ones end
+    with status `storage_full`.
+  - Nothing is deleted automatically.
+- **Catalog:** the SQLite table `recordings`; files are in `<state_dir>/recordings/`. A
+  recording left `recording` by a crashed process is marked `interrupted` at startup.
+- **HTTP:** needs `record`; users see their own recordings, admins see all.
+  - `GET /api/recordings` lists them.
+  - `GET /api/recordings/<id>/file` downloads the WAV.
+  - `DELETE /api/recordings/<id>` needs the CSRF header; an active recording is refused with
+    409.
+
 ## Spectrum stream (M1)
 
 `stream.spectrum {receiver, enabled}` needs `listen` and gives an immediate result. While

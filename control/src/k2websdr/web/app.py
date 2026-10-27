@@ -33,6 +33,7 @@ from ..auth import accounts as acc
 from ..auth.net import ProxyPolicy, SlidingWindow, TokenBucket
 from ..config import Config, airspyhf_spec
 from ..core.receiver import ReceiverConfig, airspyhf_link_factory, replay_link_factory
+from ..core.recording import RecordingCatalog, StoragePolicy
 from ..core.service import ControlCore, Principal, Session
 from ..db.migrate import connect, migrate
 from ..ledger.load import availability, load_ledger, summary
@@ -84,7 +85,9 @@ def create_app(cfg: Config, *, link_factory=None) -> FastAPI:
         st.proxies = ProxyPolicy(cfg.trusted_proxies)
         st.login_limiter = SlidingWindow(cfg.login_attempts_per_minute, 60.0)
         st.ledger = load_ledger(cfg.ledger)
-        st.core = ControlCore(build=cfg.build, exposure=cfg.exposure, ledger=summary(st.ledger))
+        catalog = RecordingCatalog(st.conn, StoragePolicy(cfg.recordings_dir, cfg.recordings_cap_bytes,
+                                                          cfg.recordings_min_free_bytes))
+        st.core = ControlCore(build=cfg.build, exposure=cfg.exposure, ledger=summary(st.ledger), recordings=catalog)
         cfg.lock_dir.mkdir(parents=True, exist_ok=True)
         replay_factory = link_factory or replay_link_factory(cfg.worker_bin, cfg.lock_dir)
         live_factory = link_factory or airspyhf_link_factory(cfg.worker_bin, cfg.lock_dir)
@@ -306,6 +309,41 @@ def create_app(cfg: Config, *, link_factory=None) -> FastAPI:
         av = availability(st.ledger)
         return {"available": [i for i, r in av.items() if not r],
                 "unavailable": {i: r for i, r in av.items() if r}}
+
+    # ------------------------------------------------------------ recordings
+    def _recording_for(info: acc.SessionInfo, rid: str) -> dict:
+        row = st.core.recordings.get(rid) if st.core.recordings else None
+        if row is None or (row["owner"] != f"user:{info.username}" and "admin" not in info.permissions):
+            raise HTTPException(404, "no such recording")
+        return row
+
+    @app.get("/api/recordings")
+    async def recordings_list(request: Request):
+        info = require_api_session(request, permission="record")
+        owner = None if "admin" in info.permissions else f"user:{info.username}"
+        return {"recordings": st.core.recordings.list(owner) if st.core.recordings else []}
+
+    @app.get("/api/recordings/{rid}/file")
+    async def recording_file(request: Request, rid: str):
+        info = require_api_session(request, permission="record")
+        row = _recording_for(info, rid)
+        path = st.core.recordings.path_of(row)
+        if not path.is_file():
+            raise HTTPException(410, "the file is gone")
+        return Response(path.read_bytes(), media_type="audio/wav",
+                        headers={"Content-Disposition": f'attachment; filename="{row["file"]}"'})
+
+    @app.delete("/api/recordings/{rid}")
+    async def recording_delete(request: Request, rid: str):
+        info = require_api_session(request, permission="record")
+        require_csrf(request, info, request.headers.get("x-csrf-token"))
+        row = _recording_for(info, rid)
+        if row["status"] == "recording" and rid in st.core.store.view()["recordings"]:
+            raise HTTPException(409, "stop the recording first")
+        st.core.recordings.delete(rid)
+        st.core.refresh_storage()
+        acc.audit(st.conn, f"user:{info.username}", "recording.delete", f"{rid} {row['file']}")
+        return {"deleted": rid}
 
     @app.post("/api/admin/users", status_code=201)
     async def admin_create_user(request: Request, body: NewUser):
