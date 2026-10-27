@@ -112,6 +112,11 @@ class Window2:
         self.log("prompt", prompt=prompt)
         if self.a.test:
             return "(test)"
+        try:                                          # drop keys pressed earlier (Window 2: a stray Enter
+            import termios                            # skipped the replug prompt)
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        except (ImportError, OSError, ValueError):
+            pass
         say(f">> {prompt}", YELLOW)
         note = input("   (press Enter; you can type a note first) ").strip()
         self.log("answer", prompt=prompt, note=note)
@@ -326,22 +331,30 @@ class Window2:
         self.step("9_unplug", worker_exit_code=self.cap.exit_code, expected_exit_code=69,
                   status_failed=[s.result.name for s in st],
                   seconds_from_prompt_to_exit=round(self.cap.exit_at - t0, 2))
-        self.ask("Plug the Airspy back in, wait 3 seconds")
-        for attempt in range(10):
+        self.ask("Plug the Airspy back in (or re-authorize it), wait 3 seconds")
+        t_replug = time.monotonic()
+        attempt = 0
+        while True:                                   # like the service: keep trying, up to 60 s here
             try:
                 await self.start(10_000_000)
                 break
             except WorkerStartError as e:
                 self.log("restart_attempt", attempt=attempt, result=e.result and e.result.name, exit=e.exit_code)
+                attempt += 1
+                if time.monotonic() - t_replug > (5 if self.a.test else 60):
+                    self.wp = None
+                    self.fail("9_replug", f"worker could not reopen the device within 60 s ({attempt} tries)")
+                    return
                 await asyncio.sleep(1)
-        else:
-            self.fail("9_replug", "worker could not reopen the device after 10 tries")
-            return
         t0 = time.monotonic()
         await asyncio.sleep(self.secs(3))
-        self.step("9_replug", attempts=attempt + 1, spectrum_rows_3s=sum(1 for t, *_ in self.cap.spectrum if t >= t0))
+        self.step("9_replug", attempts=attempt + 1, seconds_to_reopen=round(t0 - t_replug, 2),
+                  spectrum_rows_3s=sum(1 for t, *_ in self.cap.spectrum if t >= t0))
 
     async def s10_normal_stop(self) -> None:
+        if self.wp is None or not self.wp.running:
+            self.step("10_normal_stop", skipped="no worker running")
+            return
         t0 = time.monotonic()
         await self.wp.stop(10)
         self.step("10_normal_stop", exit_code=self.cap.exit_code, seconds=round(time.monotonic() - t0, 2),
@@ -354,6 +367,8 @@ class Window2:
                  ("4b", lambda: self.s2_wwv_am("4_wwv15_am", 15)), ("5", self.s5_ssb_cw), ("6", self.s6_fm_chains),
                  ("7", self.s7_rate_change), ("8", self.s8_long_run), ("9", self.s9_unplug),
                  ("10", self.s10_normal_stop)]
+        if self.a.only_unplug:
+            steps = [("1", self.s1_open_and_spectrum), ("9", self.s9_unplug), ("10", self.s10_normal_stop)]
         say("== Window 2: first live run of the M1 worker on the Airspy HF+ ==", GREEN)
         for key, fn in steps:
             if key == "9" and self.a.skip_unplug:
@@ -400,6 +415,7 @@ def main() -> int:
     ap.add_argument("--bundle-dir", default="/tmp")
     ap.add_argument("--long-seconds", type=float, default=600)
     ap.add_argument("--skip-unplug", action="store_true")
+    ap.add_argument("--only-unplug", action="store_true", help="open, unplug/replug, normal stop (about 1 minute)")
     ap.add_argument("--test", action="store_true", help="mock worker, short timings (development only)")
     ap.add_argument("--short", type=float, default=0.6, help="--test: seconds per timed wait")
     a = ap.parse_args()
