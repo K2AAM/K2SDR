@@ -37,6 +37,13 @@ struct Args {
     uint32_t frame_samples = 4096;
     bool paced = false;              // real-time pacing; default is as fast as the consumer reads
     bool loop = false;               // wrap at end of file instead of END_OF_STREAM
+    bool start_after_ping = false;   // produce no frames until the first PING has been answered, so
+                                     // channels can be opened before playback (replay only)
+
+    // M1 DSP outputs (worker/src/dsp). Off by default, so M0 behaviour is unchanged.
+    bool iq_frames = true;           // SAMPLES frames of the raw capture
+    uint32_t spectrum_fft = 0;       // 0 = no SPECTRUM frames; else FFT size 64..65536
+    uint32_t spectrum_fps = 15;      // SPECTRUM frames per second, 1..100
 };
 
 // Parse argv strictly. On error, prints a message to stderr and returns nullopt.

@@ -36,7 +36,7 @@ add_executable(ksdr-worker
 )
 target_include_directories(ksdr-worker PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/../protocol)
 target_compile_options(ksdr-worker PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror)
-target_link_libraries(ksdr-worker PRIVATE k2_liquid)
+target_link_libraries(ksdr-worker PRIVATE k2dsp k2_liquid)
 # Link map: every input file the linker used (archives and members), checked by tools/check_dsp_deps.py.
 target_link_options(ksdr-worker PRIVATE "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/ksdr-worker.map")
 

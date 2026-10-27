@@ -55,6 +55,7 @@ class Callbacks:
     on_frame: Callable[[FrameHeader, bytes], None] = lambda h, p: None
     on_status: Callable[[wc.Status], None] = lambda s: None
     on_late_applied: Callable[[wc.Applied], None] = lambda a: None
+    on_late_channel_applied: Callable[[wc.ChannelApplied], None] = lambda a: None
     on_exit: Callable[[int], None] = lambda code: None
 
 
@@ -137,7 +138,8 @@ class WorkerProcess:
         self._ctl_w.write(wc.CtlHeader(msg_type, len(payload), seq).pack() + payload)
         return seq
 
-    async def _command(self, msg_type: wc.MsgType, payload: bytes, timeout: float) -> wc.Applied:
+    async def _command(self, msg_type: wc.MsgType, payload: bytes, timeout: float):
+        """ACK, then APPLIED (SET_CAPTURE/STOP) or CHANNEL_APPLIED (CHANNEL_*), or FAILED."""
         loop = asyncio.get_running_loop()
         seq = self._send(msg_type, payload)
         ack, done = loop.create_future(), loop.create_future()
@@ -158,6 +160,15 @@ class WorkerProcess:
 
     async def set_capture(self, center_hz: int | None, rate_hz: int | None, timeout: float) -> wc.Applied:
         return await self._command(wc.MsgType.SET_CAPTURE, wc.SetCapture(center_hz, rate_hz).pack_payload(), timeout)
+
+    async def channel_open(self, ch: wc.Channel, timeout: float = 5.0) -> wc.ChannelApplied:
+        return await self._command(wc.MsgType.CHANNEL_OPEN, ch.pack_payload(), timeout)
+
+    async def channel_tune(self, ch: wc.Channel, timeout: float = 5.0) -> wc.ChannelApplied:
+        return await self._command(wc.MsgType.CHANNEL_TUNE, ch.pack_payload(), timeout)
+
+    async def channel_close(self, channel_id: int, timeout: float = 5.0) -> wc.ChannelApplied:
+        return await self._command(wc.MsgType.CHANNEL_CLOSE, wc.pack_channel_close(channel_id), timeout)
 
     async def stop(self, timeout: float = 5.0) -> None:
         if not self.running:
@@ -212,14 +223,17 @@ class WorkerProcess:
             fut = self._acks.get(hdr.cmd_seq)
             if fut and not fut.done():
                 fut.set_result(wc.unpack_result(t, payload))
-        elif t is wc.MsgType.APPLIED:
-            ap = wc.Applied.unpack_payload(payload)
+        elif t in (wc.MsgType.APPLIED, wc.MsgType.CHANNEL_APPLIED):
+            ap = (wc.Applied if t is wc.MsgType.APPLIED else wc.ChannelApplied).unpack_payload(payload)
             fut = self._dones.pop(hdr.cmd_seq, None)
             if fut and not fut.done():
                 fut.set_result(ap)
             elif hdr.cmd_seq in self._timed_out:
                 self._timed_out.discard(hdr.cmd_seq)
-                self._cb.on_late_applied(ap)
+                if isinstance(ap, wc.ChannelApplied):
+                    self._cb.on_late_channel_applied(ap)
+                else:
+                    self._cb.on_late_applied(ap)
         elif t is wc.MsgType.FAILED:
             res = wc.unpack_result(t, payload)
             fut = self._dones.pop(hdr.cmd_seq, None)
@@ -233,7 +247,7 @@ class WorkerProcess:
             while True:
                 hdr = FrameHeader.unpack(await r.readexactly(HEADER_LEN_V1))
                 if hdr.header_len > HEADER_LEN_V1:
-                    await r.readexactly(hdr.header_len - HEADER_LEN_V1)
+                    hdr = hdr.with_ext(await r.readexactly(hdr.header_len - HEADER_LEN_V1))
                 payload = await r.readexactly(hdr.payload_len) if hdr.payload_len else b""
                 self._cb.on_frame(hdr, payload)
         except (asyncio.IncompleteReadError, ConnectionError):

@@ -48,12 +48,17 @@ enum kctl_msg_type {
     KCTL_MSG_SET_CAPTURE = 0x0001,
     KCTL_MSG_STOP        = 0x0002, /* stop streaming and release the device; worker then exits */
     KCTL_MSG_PING        = 0x0003,
+    /* M1: listener channels (DSP in the worker). Answered by ACK, then CHANNEL_APPLIED or FAILED. */
+    KCTL_MSG_CHANNEL_OPEN  = 0x0010, /* kctl_channel_v1; channel_id must not exist */
+    KCTL_MSG_CHANNEL_TUNE  = 0x0011, /* kctl_channel_v1: the full desired config of an existing channel */
+    KCTL_MSG_CHANNEL_CLOSE = 0x0012, /* kctl_channel_close_v1 */
 
     /* worker -> control, replies (cmd_seq echoes the command) */
     KCTL_MSG_ACK         = 0x0081,
     KCTL_MSG_APPLIED     = 0x0082,
     KCTL_MSG_FAILED      = 0x0083,
     KCTL_MSG_PONG        = 0x0084,
+    KCTL_MSG_CHANNEL_APPLIED = 0x0085, /* kctl_channel_applied_v1, answers CHANNEL_* */
 
     /* worker -> control, unsolicited (cmd_seq = 0) */
     KCTL_MSG_STATUS      = 0x00C1
@@ -67,7 +72,8 @@ enum kctl_result {
     KCTL_E_DEVICE        = 3, /* driver/device error */
     KCTL_E_BUSY          = 4,
     KCTL_E_BAD_MESSAGE   = 5, /* malformed header/payload, bad sequence */
-    KCTL_E_TIMEOUT       = 6  /* device did not settle within the worker's own bound */
+    KCTL_E_TIMEOUT       = 6, /* device did not settle within the worker's own bound */
+    KCTL_E_NOT_FOUND     = 7  /* CHANNEL_TUNE/CLOSE for a channel_id that is not open */
 };
 
 /* Worker acquisition states reported by STATUS. */
@@ -124,6 +130,58 @@ struct kctl_failed_v1 {
     uint32_t reserved; /* 4 must be 0 */
 };
 KCTL_STATIC_ASSERT(sizeof(struct kctl_failed_v1) == 8, "failed payload must be 8 bytes");
+
+/* Listener channel modes and AGC (M1 design §3.2; docs/design/M1-dsp.md). */
+enum kctl_mode { KCTL_MODE_AM = 1, KCTL_MODE_USB = 2, KCTL_MODE_LSB = 3, KCTL_MODE_CW = 4,
+                 KCTL_MODE_NFM = 5, KCTL_MODE_WFM = 6 };
+enum kctl_agc { KCTL_AGC_OFF = 1, KCTL_AGC_FAST = 2, KCTL_AGC_MEDIUM = 3, KCTL_AGC_SLOW = 4 };
+
+/* kctl_channel_v1.flags */
+enum kctl_channel_flags {
+    KCTL_CH_DEFAULT_PASSBAND = 1u << 0, /* ignore pass_lo/hi; use the mode's default */
+    KCTL_CH_DEFAULT_BFO      = 1u << 1  /* ignore bfo_hz; 700 Hz */
+};
+#define KCTL_CH_DEFINED_MASK 0x00000003u
+#define KCTL_MAX_CHANNELS    16u        /* per worker; more is refused with KCTL_E_BUSY */
+
+/*
+ * CHANNEL_OPEN / CHANNEL_TUNE payload. All frequencies integer Hz.
+ * offset_hz is the tuned frequency relative to the capture centre. Passband edges are relative
+ * to the tuned frequency. Invalid values are refused at ACK with KCTL_E_OUT_OF_RANGE (passband,
+ * span, rate, BFO) or KCTL_E_UNSUPPORTED (unknown mode/agc); the channel is then unchanged.
+ * TUNE that changes only offset_hz is a phase-continuous retune: channel_gen is kept. Any other
+ * change rebuilds the channel's DSP and bumps channel_gen.
+ */
+struct kctl_channel_v1 {
+    uint32_t channel_id;      /*  0 chosen by the control service */
+    uint16_t mode;            /*  4 enum kctl_mode */
+    uint16_t agc;             /*  6 enum kctl_agc */
+    int64_t  offset_hz;       /*  8 */
+    int32_t  pass_lo_hz;      /* 16 */
+    int32_t  pass_hi_hz;      /* 20 */
+    int32_t  bfo_hz;          /* 24 CW pitch, 100..3000 */
+    int32_t  manual_gain_cdb; /* 28 AGC off: fixed gain, centi-dB */
+    uint32_t flags;           /* 32 enum kctl_channel_flags */
+    uint32_t reserved;        /* 36 must be 0 */
+};
+KCTL_STATIC_ASSERT(sizeof(struct kctl_channel_v1) == 40, "channel payload must be 40 bytes");
+KCTL_STATIC_ASSERT(offsetof(struct kctl_channel_v1, offset_hz) == 8, "offset_hz offset");
+
+struct kctl_channel_close_v1 {
+    uint32_t channel_id; /* 0 */
+    uint32_t reserved;   /* 4 must be 0 */
+};
+KCTL_STATIC_ASSERT(sizeof(struct kctl_channel_close_v1) == 8, "channel close payload must be 8 bytes");
+
+/* CHANNEL_APPLIED: the channel as the worker now runs it (defaults resolved). */
+struct kctl_channel_applied_v1 {
+    uint64_t channel_gen;            /*  0 current (for CLOSE: the last) */
+    uint64_t capture_gen;            /*  8 */
+    struct kctl_channel_v1 channel;  /* 16 resolved config; flags = 0 */
+    uint32_t channel_rate_hz;        /* 56 complex rate inside the channel (12000/24000/192000) */
+    uint32_t open;                   /* 60 1 = open, 0 = closed by this command */
+};
+KCTL_STATIC_ASSERT(sizeof(struct kctl_channel_applied_v1) == 64, "channel applied payload must be 64 bytes");
 
 struct kctl_status_v1 {
     uint32_t state;       /*  0 enum kctl_worker_state */

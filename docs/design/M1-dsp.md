@@ -1,8 +1,8 @@
 # M1 worker DSP — parameters and behaviour
 
 Implements design §3.2 in `worker/src/dsp/` (library `k2dsp`, linked against the pinned
-liquid-dsp 1.8.3). It is not yet wired to the worker's frame/control loop; that is M1 step 3
-(protocol additions). Tests: `control/tests/test_dsp_pipeline.py` (via `ksdr-dsp-run`), also
+liquid-dsp 1.8.3). The worker runs it on every capture block and sends SPECTRUM/AUDIO frames;
+listener channels are opened with worker_ctl CHANNEL_* (`docs/protocol/worker-dsp-v1.md`). Tests: `control/tests/test_dsp_pipeline.py` (via `ksdr-dsp-run`), also
 under ASan/UBSan (`make test-worker-san`).
 
 ## Spectrum (one per receiver)

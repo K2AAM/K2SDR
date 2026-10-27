@@ -15,14 +15,32 @@
 //   annotated sample carries DISCONTINUITY (+ GAP_KNOWN/gap_samples if known).
 // - At end of file: END_OF_STREAM, or with --loop a wrap flagged
 //   DISCONTINUITY (gap unknown) within the same generation.
+//
+// M1 DSP (worker/src/dsp, protocol: frame_v1 SPECTRUM/AUDIO, worker_ctl CHANNEL_*):
+// - Every block of capture samples (the same blocks SAMPLES frames carry; --iq-frames off
+//   suppresses those frames, not the processing) feeds the receiver's spectrum and every open
+//   listener channel, in that order; frames follow in channel_id order. Deterministic on a
+//   given build host.
+// - A new capture generation rebuilds the spectrum and every channel: each channel gets a new
+//   channel_gen and its next AUDIO frame carries NEW_GEN with first_sample_index 0.
+// - A block that starts at a discontinuity marks the next SPECTRUM frame and each channel's next
+//   AUDIO frame DISCONTINUITY.
+// - --start-after-ping: no frames (and no pacing clock) until the first PING is answered; the
+//   control service opens channels first, so where audio starts is deterministic.
 #pragma once
 
 #include <cstdint>
+#include <map>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "args.hpp"
+#include "dsp/channel.hpp"
+#include "dsp/spectrum.hpp"
 #include "io.hpp"
 #include "replay_source.hpp"
+#include "worker_ctl_v1.h"
 
 namespace k2 {
 
@@ -40,12 +58,29 @@ enum ExitCode : int {
 
 class Worker {
 public:
-    Worker(const Args& args, ReplaySource& src) : a_(args), src_(src), gen_(args.capture_gen_start) {}
+    Worker(const Args& args, ReplaySource& src);
+    ~Worker();
     int run();  // returns an ExitCode
 
 private:
+    struct ChannelState {
+        kctl_channel_v1 cfg{};               // resolved (defaults filled in, flags 0)
+        std::unique_ptr<dsp::Channel> dsp;
+        uint64_t channel_gen = 0;
+        uint64_t audio_index = 0;            // first_sample_index of the next AUDIO frame
+        uint32_t pending_flags = 0;
+    };
+
     void build_frame_if_due(uint64_t now_ns);
     void append_frame(uint16_t kind, uint64_t start, uint32_t count);
+    void write_header(uint16_t kind, uint16_t format, uint32_t flags, uint64_t first_index, int64_t origin,
+                      uint64_t gap, uint32_t stream_id, uint32_t rate, uint32_t count, uint16_t header_len);
+    void process_dsp(uint64_t start, uint32_t count, uint32_t block_flags);
+    void reset_dsp_for_new_generation();
+    void handle_channel(uint16_t type, uint64_t seq, const uint8_t* payload);
+    uint32_t resolve_channel(const kctl_channel_v1& in, kctl_channel_v1& out) const;
+    std::unique_ptr<dsp::Channel> build_channel(const kctl_channel_v1& cfg) const;  // throws invalid_argument
+    void send_channel_applied(uint64_t seq, const ChannelState& ch, bool open);
     bool handle_ctl_input();          // false => fatal protocol error
     void handle_set_capture(uint64_t seq, const uint8_t* payload);
     void send_ctl(uint16_t type, uint64_t seq, const void* payload, uint32_t len);
@@ -71,6 +106,17 @@ private:
     bool stopping_ = false;
     uint64_t last_cmd_seq_ = 0;
     uint64_t t0_ns_ = 0;
+    bool held_ = false;               // --start-after-ping: waiting for the first PING
+
+    // DSP
+    dsp::SampleFormat dsp_fmt_;
+    std::unique_ptr<dsp::Spectrum> spectrum_;
+    uint32_t spectrum_pending_ = 0;
+    std::map<uint32_t, ChannelState> channels_;
+    uint64_t next_channel_gen_ = 1;
+    std::vector<dsp::cf> cbuf_;
+    std::vector<dsp::SpectrumFrame> sframes_;
+    std::vector<int16_t> abuf_;
 };
 
 }  // namespace k2
