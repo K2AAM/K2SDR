@@ -29,7 +29,7 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build make git ca-certificates python3 python3-venv \
-            pkg-config libairspyhf-dev \
+            pkg-config libairspyhf-dev nodejs npm \
             libfftw3-dev libliquid-dev   # installed on purpose: the build must still exclude both
       - uses: actions/checkout@v4
       - name: Install pinned uv
@@ -54,6 +54,13 @@ jobs:
           set -o pipefail
           python3 tools/check_dsp_deps.py build/worker build/third_party/liquid-dsp \
             --expect-fftw-installed --expect-debian-liquid 2>&1 | tee -a check.log
+      - name: Browser UI (Debian 13's own Node, as on the Optiplex)
+        run: |
+          set -o pipefail
+          node --version; npm --version
+          (make web-test && make web) 2>&1 | tee -a check.log
+          test -f web/dist/index.html
+          ! grep -q "<script>" web/dist/index.html    # no inline script (strict CSP)
       - name: make check
         run: |
           set -o pipefail
