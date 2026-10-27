@@ -38,6 +38,8 @@ export class Listener {
   channelId: string | null = null;
   private gen = -1;
   private epoch = -1;                     // the connection epoch the channel was opened on
+  private seen = false;                   // our channel has appeared in the server state since it opened
+  private reopening: Promise<boolean> | null = null;   // an automatic reopen in flight
   private lastMeter = 0;
   levelDbfs: number | null = null;
   lastError: { code: string; detail: string } | null = null;
@@ -50,7 +52,7 @@ export class Listener {
     // connect can fire after we already opened on it, so compare epochs instead of reopening blindly.
     this.offs.push(conn.onConnect(() => { if (conn.epoch !== this.epoch) { this.channelId = null; void this.open(); } }));
     this.offs.push(conn.onStream((m) => { if (m.kind === 2) this.audio(m); }));
-    this.offs.push(conn.onState(() => this.changed()));
+    this.offs.push(conn.onState(() => this.watch()));
   }
 
   onChange(fn: () => void): () => void { this.listeners.add(fn); return () => this.listeners.delete(fn); }
@@ -60,6 +62,26 @@ export class Listener {
   get view(): ChannelView | null {
     const ch = this.channelId ? (conn_state(this.conn)?.channels as Record<string, Json> | undefined)?.[this.channelId] : undefined;
     return ch ? ({ id: this.channelId, ...(ch as object) } as unknown as ChannelView) : null;
+  }
+
+  /** The server can close our channel on its own: a receiver retune (by anyone) that leaves its
+   *  frequency outside the capture, or a mode the new rate cannot run. Notice it in the state and
+   *  open a new channel at our settings; if that fails, the error shows and the next tune opens. */
+  private watch(): void {
+    const chans = conn_state(this.conn)?.channels as Record<string, Json> | undefined;
+    if (this.channelId && chans) {
+      if (this.channelId in chans) this.seen = true;
+      else if (this.seen) this.lost();
+    }
+    this.changed();
+  }
+
+  private lost(): void {
+    this.channelId = null;
+    this.seen = false;
+    this.levelDbfs = null;
+    if (this.reopening || this.conn.status !== "open") return;
+    this.reopening = this.open().finally(() => { this.reopening = null; });
   }
 
   private audio(m: AudioMsg): void {
@@ -97,12 +119,14 @@ export class Listener {
     if (o.result?.status === "applied" && o.result.channel) {
       this.channelId = o.result.channel;
       this.gen = o.result.channel_gen ?? -1;
+      this.seen = false;
     }
     return this.settle(o);
   }
 
   /** Change any listener setting; opens the channel if there is none yet. */
   async tune(change: Partial<ListenerSettings> & { passbandDefault?: boolean }): Promise<boolean> {
+    if (this.reopening) await this.reopening;                     // never two channels at once
     const prev = this.settings;
     const next: ListenerSettings = { ...prev, ...change };
     if (change.passbandDefault || (change.mode && change.mode !== prev.mode && !change.passbandHz)) next.passbandHz = null;
@@ -127,6 +151,15 @@ export class Listener {
     }
     const o = await this.conn.command("channel.tune", args);
     if (o.result?.status === "applied") this.settings = next;
+    else if ((o.result ?? o.ack).code === "E_UNKNOWN_CHANNEL") {
+      // The server closed it meanwhile (e.g. a receiver retune): open a new one with the change.
+      this.channelId = null;
+      this.seen = false;
+      this.settings = next;
+      const ok = await this.open();
+      if (!ok) this.settings = prev;
+      return ok;
+    }
     return this.settle(o);
   }
 
