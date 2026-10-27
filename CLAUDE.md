@@ -62,8 +62,12 @@ invent features, or weaken explicit requirements unless Adam asks.
   worker DSP library `k2dsp` (spectrum, channels, own look-ahead AGC): `docs/design/M1-dsp.md`.
   Done: worker DSP, channels (control + browser stream v1, `docs/protocol/stream-v1.md`),
   Airspy source in the worker (`docs/protocol/worker-live-v1.md`, mock-tested) and in the service
-  (`driver = "airspyhf"`, `receiver.set_hw_gain`, `docs/ops/airspyhf-receiver.md`). Next: Window 2
-  (first live run), then the Svelte UI, recording, Window 3.
+  (`driver = "airspyhf"`, `receiver.set_hw_gain`, `docs/ops/airspyhf-receiver.md`), Window 2
+  (2026-10-27, `docs/ops/window2-results-2026-10-27.md`: worker on the real Airspy, FT8 decodes,
+  gain ~6 dB/step, unplug/replug), channel controls, the Svelte UI (`web/`, `make web`; spectrum,
+  waterfall, RIG, AudioWorklet audio) and server-side recording (`recording.*`, /api/recordings).
+  Next: Window 3 = the whole service live (B3 every mode desktop + iPhone, B7, B8, B9, B10) and the
+  overnight run (B4); open items: WWV 10 MHz hum, worker CPU split (`--only-cpu`).
   M1 branches: `m1/<topic>`.
 - Each block: branch `m0/<topic>` → PR → CI green → merge. Keep PRs reviewable.
 - Two Claude sessions may work on this repo: a cloud session (no LAN access)

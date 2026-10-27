@@ -5,6 +5,7 @@
   import { formatFrequency } from "./lib/freq";
   import { Listener, loadSettings } from "./lib/listener";
   import type { Json } from "./lib/patch";
+  import Recordings from "./Recordings.svelte";
   import Rig from "./Rig.svelte";
   import SpectrumView from "./SpectrumView.svelte";
 
@@ -21,6 +22,12 @@
   let available: string[] = $state([]);
   let selected: string | null = $state(null);
   let permissions: string[] = $state([]);
+  let username = $state("");
+  let csrf = $state("");
+  let showRecordings = $state(false);
+  type RecState = { receiver: string; owner: string; seconds: number; bytes: number; file: string };
+  let recordings: Record<string, RecState> = $state({});
+  let storage: { full: boolean; detail: string | null } = $state({ full: false, detail: null });
   let listener: Listener | null = $state(null);
   let listenerTick = $state(0);
 
@@ -29,6 +36,9 @@
     const st = conn.state as { receivers?: Record<string, Json>; ledger?: { available?: string[] } } | null;
     receivers = (st?.receivers ?? {}) as unknown as Record<string, Receiver>;
     available = st?.ledger?.available ?? [];
+    const full = conn.state as { recordings?: Json; storage?: Json } | null;
+    recordings = (full?.recordings ?? {}) as unknown as Record<string, RecState>;
+    storage = (full?.storage ?? { full: false, detail: null }) as unknown as typeof storage;
     if (selected === null || !(selected in receivers)) selected = Object.keys(receivers)[0] ?? null;
     ensureListener();
   });
@@ -37,7 +47,11 @@
     conn.connect();
     fetch("/api/session", { credentials: "same-origin" })
       .then((r) => (r.ok ? r.json() : null))
-      .then((j: { permissions?: string[] } | null) => { permissions = j?.permissions ?? []; })
+      .then((j: { permissions?: string[]; username?: string; csrf?: string } | null) => {
+        permissions = j?.permissions ?? [];
+        username = j?.username ?? "";
+        csrf = j?.csrf ?? "";
+      })
       .catch(() => {});
     return () => listener?.close();
   });
@@ -67,6 +81,24 @@
   });
   const stepHz = $derived.by(() => { void listenerTick; return listener?.settings.stepHz ?? 1000; });
 
+  const myRecording = $derived.by(() => {
+    const e = Object.entries(recordings).find(([, r]) => r.receiver === selected && r.owner === `user:${username}`);
+    return e ? { id: e[0], seconds: e[1].seconds, bytes: e[1].bytes, file: e[1].file } : null;
+  });
+
+  async function record() {
+    if (!listener || !selected) return;
+    const s = listener.settings;
+    const args: Record<string, Json> = { receiver: selected, frequency_hz: listener.view?.frequency_hz ?? s.frequencyHz,
+                                         mode: s.mode, agc: s.agc, manual_gain_db: s.manualGainDb };
+    if (s.passbandHz) args.passband_hz = s.passbandHz;
+    await conn.command("recording.start", args);
+  }
+
+  async function stopRecording(id: string) {
+    await conn.command("recording.stop", { recording: id });
+  }
+
   async function retune(hz: number) {
     if (!selected) return;
     await conn.command("receiver.claim", { receiver: selected });
@@ -87,6 +119,9 @@
     {/each}
   </select>
   <span class="conn {status}" role="status">{statusText[status]}</span>
+  {#if permissions.includes("record")}
+    <button class="hdrbtn" onclick={() => (showRecordings = !showRecordings)}>Recordings</button>
+  {/if}
   <a class="status-link" href="/status">Status</a>
 </header>
 
@@ -107,13 +142,19 @@
     </div>
     {#if listener}
       {#key listener}
-        <Rig {listener} {player} modes={available} canRetune={permissions.includes("hw.retune")} onRetune={retune} />
+        <Rig {listener} {player} modes={available} canRetune={permissions.includes("hw.retune")} onRetune={retune}
+             canRecord={permissions.includes("record")} recording={myRecording}
+             storageFull={storage.full ? (storage.detail ?? "full") : null} onRecord={record}
+             onStopRecording={stopRecording} />
       {/key}
     {/if}
   {:else}
     <p class="muted pad">No receivers configured.</p>
   {/if}
 </main>
+{#if showRecordings}
+  <Recordings {csrf} onClose={() => (showRecordings = false)} />
+{/if}
 
 <style>
   :global(#app) { display: grid; grid-template-rows: auto 1fr; }
@@ -124,6 +165,7 @@
   .conn.open { color: var(--ok); }
   .conn.reconnecting { color: var(--warn); }
   .status-link { color: var(--accent); }
+  .hdrbtn { background: #0f1215; border: 1px solid var(--line); border-radius: 4px; padding: .15rem .5rem; cursor: pointer; }
   main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; }
   .rx { display: flex; flex-wrap: wrap; gap: .3rem 1rem; padding: .3rem .75rem; font-size: 13px;
         border-bottom: 1px solid var(--line); }

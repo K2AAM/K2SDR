@@ -12,8 +12,24 @@
     modes: string[];
     canRetune: boolean;
     onRetune: (hz: number) => Promise<void>;
+    canRecord: boolean;
+    recording: { id: string; seconds: number; bytes: number; file: string } | null;   // mine, on this receiver
+    storageFull: string | null;
+    onRecord: () => Promise<void>;
+    onStopRecording: (id: string) => Promise<void>;
   }
-  let { listener, player, modes, canRetune, onRetune }: Props = $props();
+  let { listener, player, modes, canRetune, onRetune, canRecord, recording, storageFull, onRecord,
+        onStopRecording }: Props = $props();
+  let recBusy = $state(false);
+  async function toggleRecord() {
+    recBusy = true;
+    try {
+      if (recording) await onStopRecording(recording.id);
+      else await onRecord();
+    } finally {
+      recBusy = false;
+    }
+  }
 
   const STEPS = [10, 100, 500, 1000, 5000, 9000, 10000];
   let tick = $state(0);                                     // re-render on listener/player changes
@@ -154,9 +170,26 @@
     {:else}
       <button onclick={() => (muted = !muted)} aria-pressed={muted}>{muted ? "Unmute" : "Mute"}</button>
       <input type="range" min="0" max="1" step="0.01" bind:value={volume} aria-label="Volume" />
-      {#if stats}<span class="muted small">buffer {stats.bufferedMs} ms · underruns {stats.underruns}</span>{/if}
+      {#if stats}<span class="muted small jit">buffer {stats.bufferedMs} ms · underruns {stats.underruns}</span>{/if}
     {/if}
   </div>
+
+  {#if canRecord}
+    <div class="row">
+      <button class="rec" class:on={recording !== null} onclick={toggleRecord}
+              disabled={recBusy || (recording === null && storageFull !== null)}>
+        {recording ? "■ Stop recording" : "● Record"}
+      </button>
+      {#if recording}
+        <span class="small recinfo">{Math.floor(recording.seconds / 60)}:{String(Math.floor(recording.seconds) % 60).padStart(2, "0")}
+          · {(recording.bytes / 1048576).toFixed(1)} MB · {recording.file}</span>
+      {:else if storageFull}
+        <span class="bad small">Recording storage full: {storageFull}</span>
+      {:else}
+        <span class="muted small">records this frequency, mode and filter on the server (continues if the browser closes)</span>
+      {/if}
+    </div>
+  {/if}
 
   {#if err}
     <div class="err" role="alert">{err.detail || err.code}
@@ -185,5 +218,7 @@
   .lvl { font-variant-numeric: tabular-nums; }
   .muted { color: var(--muted); }
   .small { font-size: 12px; }
+  .rec { font-weight: 600; }
+  .rec.on { background: var(--bad); color: #fff; border-color: var(--bad); }
   .tap { background: var(--accent); color: #fff; border: none; padding: .45rem .9rem; font-weight: 600; }
 </style>
