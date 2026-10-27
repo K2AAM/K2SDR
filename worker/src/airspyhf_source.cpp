@@ -55,7 +55,7 @@ uint32_t AirspyhfSource::open(uint64_t serial, uint32_t rate_hz, uint32_t center
         uint64_t serials[16] = {};
         const int n = airspyhf_list_devices(serials, 16);
         const bool present = n > 0 && std::find(serials, serials + std::min(n, 16), serial) != serials + std::min(n, 16);
-        err = present ? "device present but could not be opened (in use by another program?)"
+        err = present ? "device listed but could not be opened (in use by another program, or not authorized)"
                       : "no Airspy HF+ with that serial is connected";
         return present ? KCTL_E_BUSY : KCTL_E_DEVICE;
     }
