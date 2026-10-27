@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Connection, type ConnStatus } from "./lib/client";
   import { formatFrequency } from "./lib/freq";
+  import SpectrumView from "./SpectrumView.svelte";
   import type { Json } from "./lib/patch";
 
   type Receiver = {
@@ -40,17 +41,22 @@
 </header>
 
 <main>
-  {#if rx}
+  {#if rx && selected}
     <section class="rx">
-      <div>{rx.label} <span class="muted">({rx.driver})</span></div>
-      <div class="acq {rx.acquisition.state}">
+      <span>{rx.label} <span class="muted">({rx.driver})</span></span>
+      <span class="acq {rx.acquisition.state}">
         {rx.acquisition.state}{rx.acquisition.detail ? ` — ${rx.acquisition.detail}` : ""}
-      </div>
-      <div>Centre {rx.capture.center_hz.applied !== null ? formatFrequency(rx.capture.center_hz.applied) : "—"}
-        · {rx.capture.sample_rate_hz.applied ?? "—"} S/s · generation {rx.capture_gen}</div>
+      </span>
+      <span>Centre {rx.capture.center_hz.applied !== null ? formatFrequency(rx.capture.center_hz.applied) : "—"}
+        · {rx.capture.sample_rate_hz.applied ?? "—"} S/s · generation {rx.capture_gen}</span>
     </section>
+    <div class="spectrum">
+      {#key selected}
+        <SpectrumView {conn} receiverId={selected} />
+      {/key}
+    </div>
   {:else}
-    <p class="muted">No receivers configured.</p>
+    <p class="muted pad">No receivers configured.</p>
   {/if}
 </main>
 
@@ -62,8 +68,12 @@
   .conn.open { color: var(--ok); }
   .conn.reconnecting { color: var(--warn); }
   .status-link { color: var(--accent); }
-  main { padding: .75rem; }
-  .rx { display: grid; gap: .25rem; }
+  :global(#app) { display: grid; grid-template-rows: auto 1fr; }
+  main { display: grid; grid-template-rows: auto 1fr; min-height: 0; }
+  .rx { display: flex; flex-wrap: wrap; gap: .3rem 1rem; padding: .3rem .75rem; font-size: 13px;
+        border-bottom: 1px solid var(--line); }
+  .spectrum { min-height: 0; }
+  .pad { padding: .75rem; }
   .muted { color: var(--muted); }
   .acq.running { color: var(--ok); }
   .acq.failed { color: var(--bad); }
