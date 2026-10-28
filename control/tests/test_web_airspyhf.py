@@ -89,12 +89,17 @@ def test_live_receiver_end_to_end_with_unplug_and_recovery(live_app):
         # The mock pulls the cable 2 s into the first worker's stream.
         wait_for(lambda: receiver(c)["acquisition"]["state"] == "failed")
         assert receiver(c)["acquisition"]["detail"].startswith("device not found or lost; retrying in")
+        old_gen = c.get("/api/state").json()["state"]["channels"][cid]["channel_gen"]
         back = wait_for(lambda: (s := receiver(c))["acquisition"]["state"] == "running" and s["capture_gen"] > 2
                         and s)
         assert back["capture"]["center_hz"]["applied"] == 10_050_000
         assert back["capture"]["hw_gain"]["applied"]["hf_att"] == 4
         assert cid in c.get("/api/state").json()["state"]["channels"]              # reopened, not lost
-        new_gen = c.get("/api/state").json()["state"]["channels"][cid]["channel_gen"]
+        new_gen = wait_for(lambda: (g := c.get("/api/state").json()["state"]["channels"][cid]["channel_gen"]) != old_gen
+                           and g)
+        # The new worker numbers channels from 1 again; browsers drop audio of an older channel_gen,
+        # so the published one must still increase (Window 3: no audio after replug until reload).
+        assert new_gen > old_gen
         r.until(lambda rd: sum(m.kind is sv.Kind.AUDIO and m.gen == new_gen for m in rd.binary) >= 3)
         assert {m.frequency_hz for m in r.binary if m.kind is sv.Kind.AUDIO and m.gen == new_gen} == {10_004_000}
 
