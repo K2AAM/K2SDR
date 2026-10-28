@@ -104,7 +104,12 @@ class WorkerProcess:
             self._proc = await asyncio.create_subprocess_exec(
                 *argv, pass_fds=(ctl_c.fileno(), data_c.fileno()),
                 stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE)
+                stderr=asyncio.subprocess.PIPE,
+                # Own process group: Ctrl+C in the service's terminal must reach only the service,
+                # which then stops its workers in order. Otherwise the worker took the SIGINT too,
+                # exited first, and browsers were sent "failed: worker exited with code 0; retrying"
+                # (Window 3). PR_SET_PDEATHSIG and control-socket EOF still end it with the service.
+                start_new_session=True)
         finally:
             ctl_c.close()
             data_c.close()
