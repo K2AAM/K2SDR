@@ -46,3 +46,10 @@ At 08:15, Adam pulled the USB cable with the Mac listening on WFM.
 - **A 10 kHz centre is accepted** (`freq_range_hz` lower bound). The capture span then starts
   below 0 Hz. Harmless, but the range should probably start at half the sample rate.
 - **B4:** the overnight run.
+
+## B8 re-check after PR #42 (09:15 local)
+
+Adam pulled the USB cable with the Mac listening, waited 10 s and plugged it back in. Audio came
+back by itself after about 10–15 s, with no page reload. **B8 passes on hardware.**
+
+The B4 run (`overnight-b4.md`) started right after, at about 09:18 local, for 10 hours.
