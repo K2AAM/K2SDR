@@ -66,8 +66,11 @@ invent features, or weaken explicit requirements unless Adam asks.
   (2026-10-27, `docs/ops/window2-results-2026-10-27.md`: worker on the real Airspy, FT8 decodes,
   gain ~6 dB/step, unplug/replug), channel controls, the Svelte UI (`web/`, `make web`; spectrum,
   waterfall, RIG, AudioWorklet audio) and server-side recording (`recording.*`, /api/recordings).
-  Next: Window 3 (`docs/ops/window-3.md`, Tailscale Serve HTTPS :8443) = the whole service live (B3 every mode desktop + iPhone, B7, B8, B9, B10) and the
-  overnight run (B4); open items: WWV 10 MHz hum, worker CPU split (`--only-cpu`).
+  Window 3 (2026-10-27/28, `docs/ops/window3-results-2026-10-2{7,8}.md`): the whole service live
+  over Tailscale Serve HTTPS :8443 (`docs/ops/window-3.md`), Mac + iPhone; every mode, B5, B7,
+  B8 and B9 seen on hardware. B4 10-hour run (`docs/ops/b4-results-2026-10-28.md`): 0 dropped
+  samples, CPU/RSS flat. Open: iPhone layout, worker CPU split (`--only-cpu`), WWV 10 MHz hum,
+  the retune-vs-active-recording decision (Adam).
   M1 branches: `m1/<topic>`.
 - Each block: branch `m0/<topic>` → PR → CI green → merge. Keep PRs reviewable.
 - Two Claude sessions may work on this repo: a cloud session (no LAN access)
