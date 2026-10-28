@@ -179,7 +179,9 @@ class _Channel:
     worker_id: int
     frequency_hz: int
     mode: str
-    channel_gen: int = 0
+    channel_gen: int = 0              # published (state, results, browser stream): never goes back
+    worker_gen: int = 0               # the worker's own channel_gen: matches its audio frames
+    gen_base: int = 0                 # channel_gen - worker_gen; grows when a new worker restarts at 1
     open: bool = False                # worker has applied it
     closing: bool = False
     agc: str = "medium"
@@ -539,6 +541,17 @@ class ControlCore:
         return frequency_hz - center
 
     @staticmethod
+    def _take_gen(ch: _Channel, worker_gen: int, *, new_worker: bool = False) -> None:
+        """Map the worker's channel_gen to the published one. A restarted worker (device unplugged
+        and back) numbers channels from 1 again; the published channel_gen must still increase, or
+        every browser drops the new audio as stale (Window 3, 2026-10-28)."""
+        pub = worker_gen + ch.gen_base
+        if (new_worker or worker_gen != ch.worker_gen) and pub <= ch.channel_gen:
+            ch.gen_base += ch.channel_gen + 1 - pub
+            pub = ch.channel_gen + 1
+        ch.worker_gen, ch.channel_gen = worker_gen, pub
+
+    @staticmethod
     def _worker_channel(ch: _Channel, offset_hz: int) -> wc.Channel:
         # CW pitch (BFO) stays at the worker default (700 Hz).
         lo, hi = ch.passband if ch.passband is not None else (None, None)
@@ -711,7 +724,7 @@ class ControlCore:
             ae = hdr.audio_ext
             ch = next((c for c in self._channels.values()
                        if c.worker_id == hdr.stream_id and c.receiver == rid), None)
-            if (ch is None or not ch.open or ch.closing or ae.channel_gen != ch.channel_gen
+            if (ch is None or not ch.open or ch.closing or ae.channel_gen != ch.worker_gen
                     or hdr.capture_gen != rt.capture_gen):
                 self.stream_stale["audio"] += 1
                 return
@@ -723,7 +736,7 @@ class ControlCore:
             if sess is None:
                 return
             sess.push_audio(ch.id, sv.pack(
-                sv.Kind.AUDIO, _stream_flags(hdr), ae.channel_gen,
+                sv.Kind.AUDIO, _stream_flags(hdr), ch.channel_gen,
                 hdr.first_sample_index, hdr.freq_origin_hz, hdr.sample_rate_hz, ch.id,
                 sv.AudioInfo(ae.level_cdb, ae.pass_lo_hz, ae.pass_hi_hz, int(ae.mode), int(ae.agc)), payload))
 
@@ -797,7 +810,8 @@ class ControlCore:
                 self._reply_result(rec_cmd, cmd_id, "failed", code=ErrorCode.E_DEVICE_FAILED,
                                    detail="receiver worker did not open the recording channel")
                 return
-            ch.channel_gen, ch.open = ap.channel_gen, True
+            self._take_gen(ch, ap.channel_gen)
+            ch.open = True
             ch.applied_passband = self._applied_passband(ch.mode, ap)
             started = datetime.now(timezone.utc)
             path = self.recordings.unique_path(file_name(started, ch.frequency_hz, ch.mode))
@@ -899,9 +913,10 @@ class ControlCore:
             current.frequency_hz, current.mode = ch.frequency_hz, ch.mode
             current.agc, current.passband, current.manual_gain_db = ch.agc, ch.passband, ch.manual_gain_db
             current.applied_passband = self._applied_passband(ch.mode, ap)
-            current.channel_gen, current.open = ap.channel_gen, True
+            self._take_gen(current, ap.channel_gen)
+            current.open = True
             self._publish_channel(current)
-            self._reply_result(rec, cmd_id, "applied", channel=ch.id, channel_gen=ap.channel_gen)
+            self._reply_result(rec, cmd_id, "applied", channel=ch.id, channel_gen=current.channel_gen)
         except (WorkerRejected, WorkerFailed) as e:
             self._channel_failed(rec, cmd_id, ch, kind, WORKER_RESULT_TO_CODE.get(e.result, ErrorCode.E_INTERNAL),
                                  f"worker refused: {e.result.name}")
@@ -949,7 +964,7 @@ class ControlCore:
                     self._drop_channel(ch, tell_worker=False)
                     continue
                 if self._channels.get(ch.id) is ch and not ch.closing:
-                    ch.channel_gen = ap.channel_gen
+                    self._take_gen(ch, ap.channel_gen, new_worker=restarted)
                     ch.applied_passband = self._applied_passband(ch.mode, ap)
                     self._publish_channel(ch)
 
