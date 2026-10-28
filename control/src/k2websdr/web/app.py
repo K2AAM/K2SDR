@@ -399,6 +399,7 @@ def create_app(cfg: Config, *, link_factory=None) -> FastAPI:
             return
         await ws.accept()
         sess: Session = st.core.open_session(Principal(f"user:{info.username}", info.permissions))
+        log.info("ws session %s for %s: %s", sess.id, info.username, (ws.headers.get("user-agent") or "?")[:120])
         st.sockets.setdefault(info.token_hash, set()).add(ws)
         bucket = TokenBucket(cfg.ws_messages_per_second, cfg.ws_burst)
 
