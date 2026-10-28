@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import logging
 import re
 import time
 from collections import Counter, OrderedDict, deque
@@ -55,12 +56,22 @@ class Principal:
     permissions: frozenset[str]
 
 
+log = logging.getLogger("k2websdr.core")
+
+
+def _brief(cmd) -> str:
+    """Command arguments for the log (no secrets travel over /ws commands)."""
+    args = getattr(cmd, "args", None)
+    return "" if args is None else str(args.model_dump(exclude_none=True, mode="json"))
+
+
 class Session:
     _ids = itertools.count(1)
 
     def __init__(self, principal: Principal) -> None:
         self.id = f"s_{next(self._ids):06d}{int(time.time() * 1000) % 100000:05d}"
         self.principal = principal
+        self.opened = time.monotonic()
         self.outbox: asyncio.Queue[m.BaseModel] = asyncio.Queue()
         self.subscribed = False
         self.closed = False
@@ -282,6 +293,8 @@ class ControlCore:
         """Browser gone. Operator leases of this session end; jobs are untouched."""
         s.closed = True
         self.sessions.pop(s.id, None)
+        log.info("session %s (%s) closed after %.0f s; stream sent %s, dropped for backpressure %s", s.id,
+                 s.principal.user, time.monotonic() - s.opened, dict(s.stream_sent), dict(s.stream_dropped))
         for rt in self.receivers.values():
             if rt.lease.release_session(s.id):
                 rt.publish_lease()
@@ -315,16 +328,20 @@ class ControlCore:
             if rec.result is not None:
                 s.send(rec.result)
             return
+        log.info("cmd %s %s %s %s", s.id, cmd.id[-6:], cmd.op, _brief(cmd))
         try:
             needed = m.OP_PERMISSION[cmd.op]
             if needed is not None and needed not in s.principal.permissions:
                 raise Rejected(ErrorCode.E_FORBIDDEN, f"{cmd.op} requires permission {needed}")
             await getattr(self, "_op_" + cmd.op.replace(".", "_"))(s, cmd)
         except CapacityRejected as r:
+            log.info("cmd %s rejected %s: %s", cmd.id[-6:], r.code, r.detail)
             s.send(m.Ack(v=1, type="ack", id=cmd.id, status="rejected", code=r.code, detail=r.detail))
         except Rejected as r:
+            log.info("cmd %s rejected %s: %s", cmd.id[-6:], r.code, r.detail)
             self._reply_ack(s, cmd.id, "rejected", code=r.code, detail=r.detail)
         except LeaseError as le:
+            log.info("cmd %s rejected %s: %s", cmd.id[-6:], le.code, le.detail)
             self._reply_ack(s, cmd.id, "rejected", code=le.code, detail=le.detail)
 
     def _reply_ack(self, s: Session, cmd_id: str, status: str, *, code: ErrorCode | None = None,
@@ -346,6 +363,8 @@ class ControlCore:
                               rev=self.store.rev, capture_gen=capture_gen, channel=channel,
                               channel_gen=channel_gen, recording=recording)
         rec.finished = time.monotonic()
+        if status != "applied":
+            log.info("cmd %s %s %s: %s", cmd_id[-6:], status, code, detail)
         for sid in rec.sessions:
             sess = self.sessions.get(sid)
             if sess is not None:
@@ -576,6 +595,7 @@ class ControlCore:
         """Remove from registry and state now; optionally tell the worker (best effort)."""
         ch.closing = True
         self._channels.pop(ch.id, None)
+        log.info("channel %s (%s, %d Hz %s) closed", ch.id, ch.session or ch.job, ch.frequency_hz, ch.mode)
         rec = self._rec_by_channel.get(ch.id)
         if rec is not None:                                # e.g. no longer fits after a receiver retune
             self._finish_recording(rec, "interrupted", "the receiver no longer covers this frequency",
