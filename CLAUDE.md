@@ -40,6 +40,9 @@ invent features, or weaken explicit requirements unless Adam asks.
 - Milestone 0 never opens a physical SDR. The `k2dev` account is intentionally
   not in `plugdev` or any USB/SDR group; do not ask for that to change during
   M0. M1 hardware windows are scheduled by Adam, who grants and removes access.
+  Since 2026-10-28 Adam keeps `k2dev` in `plugdev` (only he has access to the server). That
+  permission is not a hardware window: never open the Airspy, or start a service configured
+  with it, unless Adam has stopped OWRX for a window he scheduled.
 - No sudo. If something needs root, write down the exact command and why, and
   ask Adam to run it.
 - Read-only host inspection is fine: `/etc/os-release`, `ss -ltnp`, `lsusb`,
