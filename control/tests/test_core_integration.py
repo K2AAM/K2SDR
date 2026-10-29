@@ -117,7 +117,9 @@ async def test_worker_crash_restarts_with_monotonic_generation(tmp_path):
     assert rt.restarts == 1
     assert rt.capture_gen == 2 and gens_seen[-1] == 2
     assert gens_seen == sorted(gens_seen), "generation never went backwards across the restart"
-    assert new_gen_frames == [1, 2]
+    # Exactly one NEW_GEN frame for the restart's generation 2. Generation 1's NEW_GEN frame may
+    # have gone by before this listener was attached (seen once on a slow CI runner): optional.
+    assert new_gen_frames in ([1, 2], [2]), new_gen_frames
     c = Client(core)
     await c.subscribe()
     assert c.mirror["receivers"][RX]["acquisition"]["state"] == "running"
