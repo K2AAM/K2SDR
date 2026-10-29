@@ -25,6 +25,7 @@ nothing outside the service's API and /proc.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import http.cookiejar
 import json
@@ -83,7 +84,8 @@ class Link:
     """One /ws connection: commands with results, and the audio of our channel."""
 
     def __init__(self, svc: Service, stats: dict) -> None:
-        self.ws = svc.ws()
+        self._stack = contextlib.ExitStack()             # websockets wants connect() as a context
+        self.ws = self._stack.enter_context(svc.ws())     # manager; this keeps one open across calls
         self.stats = stats
         self.channel: str | None = None
         self.next_index: int | None = None
