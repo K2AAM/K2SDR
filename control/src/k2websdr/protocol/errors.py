@@ -25,4 +25,5 @@ class ErrorCode(str, Enum):
     E_RATE_LIMITED = "E_RATE_LIMITED"
     E_STORAGE_FULL = "E_STORAGE_FULL"          # recording storage cap reached or disk nearly full
     E_UNKNOWN_RECORDING = "E_UNKNOWN_RECORDING"
+    E_RECORDING_ACTIVE = "E_RECORDING_ACTIVE"  # a retune would end a recording: retry with end_recordings
     E_INTERNAL = "E_INTERNAL"

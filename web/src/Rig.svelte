@@ -3,6 +3,7 @@
   // is shown before tuning), step, mode, passband, AGC, S-meter (dBFS, uncalibrated), volume/mute.
   import { onMount } from "svelte";
   import type { AudioPlayer } from "./lib/audio";
+  import type { Outcome } from "./lib/client";
   import { FrequencyParseError, formatFrequency, parseFrequency } from "./lib/freq";
   import type { Agc, Listener } from "./lib/listener";
 
@@ -11,7 +12,7 @@
     player: AudioPlayer;
     modes: string[];
     canRetune: boolean;
-    onRetune: (hz: number) => Promise<void>;
+    onRetune: (hz: number, endRecordings?: boolean) => Promise<Outcome | null>;
     canRecord: boolean;
     recording: { id: string; seconds: number; bytes: number; file: string } | null;   // mine, on this receiver
     storageFull: string | null;
@@ -69,11 +70,19 @@
     ev.preventDefault();
     if (preview?.hz !== undefined) { await tuneTo(preview.hz); entry = ""; }
   }
-  async function retune() {
-    if (pendingRetune === null) return;
-    const hz = pendingRetune;
+  // A retune that would end an active recording (anyone's) is refused until confirmed.
+  let recordingWarning: { hz: number; detail: string } | null = $state(null);
+  async function retune(endRecordings = false) {
+    const hz = recordingWarning?.hz ?? pendingRetune;
+    if (hz === null) return;
     pendingRetune = null;
-    await onRetune(hz);
+    recordingWarning = null;
+    const o = await onRetune(hz, endRecordings);
+    const src = o?.result ?? o?.ack;
+    if (src?.code === "E_RECORDING_ACTIVE") {
+      recordingWarning = { hz, detail: src.detail ?? "" };
+      return;
+    }
     await listener.tune({ frequencyHz: hz });
   }
   function wheel(ev: WheelEvent) {
@@ -191,10 +200,19 @@
     </div>
   {/if}
 
+  {#if recordingWarning}
+    <div class="warn" role="alert">
+      Still recording: retuning to {formatFrequency(recordingWarning.hz)} would end it.
+      <span class="muted small">({recordingWarning.detail.split(": ")[1]?.split("; send")[0] ?? ""})</span>
+      <button onclick={() => retune(true)}>End recording and retune</button>
+      <button onclick={() => (recordingWarning = null)}>Cancel</button>
+    </div>
+  {/if}
+
   {#if err}
     <div class="err" role="alert">{err.detail || err.code}
       {#if pendingRetune !== null}
-        <button onclick={retune}>Retune receiver to {formatFrequency(pendingRetune)}</button>
+        <button onclick={() => retune()}>Retune receiver to {formatFrequency(pendingRetune)}</button>
       {/if}
     </div>
   {/if}
@@ -209,6 +227,7 @@
   .entry input { width: 10em; }
   .hint { color: var(--muted); font-variant-numeric: tabular-nums; }
   .bad, .err { color: var(--bad); }
+  .warn { color: var(--warn); display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
   .hz { width: 6em; }
   button, select, input { background: #0f1215; border: 1px solid var(--line); border-radius: 4px; padding: .2rem .45rem; }
   button { cursor: pointer; }

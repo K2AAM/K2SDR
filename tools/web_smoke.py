@@ -12,6 +12,7 @@ logs no console errors or CSP violations. Exit 0 on success.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import tempfile
@@ -78,6 +79,32 @@ def record_checks(page, timeout: float, problems: list[str]) -> None:
     print("record:", shown, "|", " ".join(text.split()))
 
 
+def retune_recording_checks(page, timeout: float, problems: list[str]) -> None:
+    """A retune that would end an active recording warns first; Cancel keeps it, confirming ends it."""
+    t = timeout * 1000
+    page.get_by_text("dBFS", exact=False).first.wait_for(timeout=t)
+    page.get_by_role("button", name="● Record").click()
+    page.get_by_role("button", name="■ Stop recording").wait_for(timeout=t)
+    entry = page.get_by_label("Frequency entry")
+    for confirm in (False, True):
+        entry.fill("14074 kHz")
+        page.get_by_role("button", name="Tune").click()
+        page.get_by_role("button", name="Retune receiver to 14.074 000 MHz").click()
+        page.get_by_text("Still recording", exact=False).wait_for(timeout=t)
+        if not confirm:
+            page.get_by_role("button", name="Cancel").click()
+            time.sleep(1)
+            if page.get_by_role("button", name="■ Stop recording").count() != 1:
+                problems.append("Cancel did not keep the recording")
+            if "10.0" not in page.locator("output.big").inner_text():
+                problems.append("Cancel retuned anyway")
+        else:
+            page.get_by_role("button", name="End recording and retune").click()
+            page.locator("output.big").filter(has_text="14.074 000 MHz").wait_for(timeout=t)
+            page.get_by_role("button", name="● Record").wait_for(timeout=t)
+    print("retune-recording: warned, Cancel kept it, confirm ended it and retuned")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--screenshot", type=Path)
@@ -85,6 +112,8 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=15.0)
     ap.add_argument("--rig", action="store_true", help="also drive the RIG: audio, frequency entry, mode")
     ap.add_argument("--record", action="store_true", help="also record 3 s and find it in the Recordings drawer")
+    ap.add_argument("--retune-recording", action="store_true",
+                    help="with the mock Airspy worker: a retune that would end a recording asks first")
     ap.add_argument("--mobile", action="store_true", help="iPhone-sized viewport (390x844, DPR 3, touch)")
     ap.add_argument("--settle", type=float, default=1.0, help="seconds to let the page run before checking")
     a = ap.parse_args()
@@ -99,16 +128,26 @@ host = "127.0.0.1"
 port = {PORT}
 state_dir = "{tmp}/state"
 runtime_dir = "{tmp}/run"
-worker_bin = "{ROOT}/build/worker/ksdr-worker"
+worker_bin = "{ROOT}/build/worker/{'ksdr-worker-airspyhf-mock' if a.retune_recording else 'ksdr-worker'}"
 ledger = "{ROOT}/ledger/modes.v1.json"
 web_dir = "{ROOT}/web/dist"
-
+''' + (('''
+[[receivers]]
+id = "hfplus"
+label = "Replay: WWV 10 MHz"
+driver = "airspyhf"
+serial = "A1B2C3D4E5F60718"
+center_hz = 10000000
+rate_hz = 384000
+freq_range_hz = [10000, 30000000]
+''') if a.retune_recording else f'''
 [[receivers]]
 id = "replay-wwv"
 label = "Replay: WWV 10 MHz"
 recording = "{ROOT}/fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta"
-''')
-    server = subprocess.Popen([str(ROOT / "control/.venv/bin/k2websdr-server"), "--config", str(cfg)],
+'''))
+    env = {**os.environ, "MOCK_SETTLE_MS": "0"}          # only the mock worker reads these
+    server = subprocess.Popen([str(ROOT / "control/.venv/bin/k2websdr-server"), "--config", str(cfg)], env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:
         for _ in range(100):
@@ -160,6 +199,8 @@ recording = "{ROOT}/fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta"
                     raise
             if a.record:
                 record_checks(page, a.timeout, problems)
+            if a.retune_recording:
+                retune_recording_checks(page, a.timeout, problems)
             time.sleep(a.settle)
             if a.screenshot:
                 page.screenshot(path=str(a.screenshot))

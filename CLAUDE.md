@@ -70,7 +70,7 @@ invent features, or weaken explicit requirements unless Adam asks.
   over Tailscale Serve HTTPS :8443 (`docs/ops/window-3.md`), Mac + iPhone; every mode, B5, B7,
   B8 and B9 seen on hardware. B4 10-hour run (`docs/ops/b4-results-2026-10-28.md`): 0 dropped
   samples, CPU/RSS flat. Open: iPhone layout, worker CPU split (`--only-cpu`), WWV 10 MHz hum,
-  the retune-vs-active-recording decision (Adam).
+  (Retunes now warn before ending an active recording: Adam, 2026-10-28.)
   M1 branches: `m1/<topic>`.
 - Each block: branch `m0/<topic>` → PR → CI green → merge. Keep PRs reviewable.
 - Two Claude sessions may work on this repo: a cloud session (no LAN access)
