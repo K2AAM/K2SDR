@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { autoLevels, binsToDb, colormap, hzToPixel, levelIndex, percentile, pixelToHz, resampleMax, snap, ticks }
+import {
+  autoLevels, binsToDb, captureView, clampView, colormap, hzToPixel, levelIndex, MAX_ZOOM, percentile, pixelToHz,
+  resampleMax, rowToPixels, snap, ticks, wheelSteps, zoomOf, zoomView,
+}
   from "./spectrum";
 
 describe("spectrum helpers", () => {
@@ -48,5 +51,51 @@ describe("spectrum helpers", () => {
     expect(t.length).toBeGreaterThanOrEqual(6);
     expect(t.every((x) => x.hz % 50_000 === 0 && x.hz >= 6_908_000 && x.hz <= 7_292_000)).toBe(true);
     expect(t[0]!.label).toBe("6.95");
+  });
+});
+
+describe("zoom views", () => {
+  const C = 7_074_000, R = 384_000;
+  it("starts as the capture and zooms around the anchor, inside the capture", () => {
+    const v = captureView(C, R);
+    expect(v).toEqual({ loHz: C - R / 2, hiHz: C + R / 2 });
+    const z = zoomView(v, 4, C + 48_000, C, R);
+    expect(z.hiHz - z.loHz).toBe(R / 4);
+    // the anchor stays at the same screen fraction (0.625 of the width)
+    expect((C + 48_000 - z.loHz) / (z.hiHz - z.loHz)).toBeCloseTo(0.625, 9);
+    expect(zoomOf(z, R)).toBe(4);
+  });
+  it("is limited to 1..MAX_ZOOM and never leaves the capture", () => {
+    let v = captureView(C, R);
+    for (let i = 0; i < 20; i++) v = zoomView(v, 2, C + R / 2, C, R);    // zoom in at the right edge
+    expect(zoomOf(v, R)).toBe(MAX_ZOOM);
+    expect(v.hiHz).toBe(C + R / 2);
+    for (let i = 0; i < 20; i++) v = zoomView(v, 0.5, C, C, R);
+    expect(v).toEqual(captureView(C, R));
+    expect(clampView(C - R, R / 8, C, R).loHz).toBe(C - R / 2);
+  });
+});
+
+describe("rowToPixels", () => {
+  it("maps bins to the view, max per pixel, NaN outside the row's capture", () => {
+    const db = Float32Array.from([0, 1, 2, 3, 4, 5, 6, 7]);   // 8 bins over 800 Hz around 1000 Hz
+    const whole = rowToPixels(db, 1000, 800, { loHz: 600, hiHz: 1400 }, 4);
+    expect(Array.from(whole)).toEqual([1, 3, 5, 7]);
+    const zoomed = rowToPixels(db, 1000, 800, { loHz: 1000, hiHz: 1200 }, 4);   // bins 4,5 over 4 px
+    expect(Array.from(zoomed)).toEqual([4, 4, 5, 5]);
+    const shifted = rowToPixels(db, 1000, 800, { loHz: 1200, hiHz: 1600 }, 4);  // half outside
+    expect(Array.from(shifted.slice(0, 2))).toEqual([6, 7]);
+    expect(Number.isNaN(shifted[2]!) && Number.isNaN(shifted[3]!)).toBe(true);
+  });
+});
+
+describe("wheelSteps", () => {
+  it("one notch is one step; small trackpad deltas accumulate", () => {
+    expect(wheelSteps(0, { deltaY: -100, deltaMode: 0 })).toEqual({ steps: 1, acc: 0 });
+    expect(wheelSteps(0, { deltaY: 3, deltaMode: 1 })).toEqual({ steps: -1, acc: -20 });
+    let acc = 0, steps = 0;
+    for (let i = 0; i < 10; i++) { const r = wheelSteps(acc, { deltaY: -12, deltaMode: 0 }); acc = r.acc; steps += r.steps; }
+    expect(steps).toBe(1);
+    expect(acc).toBe(20);
   });
 });
