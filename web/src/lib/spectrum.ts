@@ -91,3 +91,66 @@ export function ticks(centerHz: number, rateHz: number, target = 8): { hz: numbe
   }
   return out;
 }
+
+// ---------------------------------------------------------------- zoom (outline §3: "zoom")
+// The display shows a frequency window ("view") of the capture. Zoom is client-side: it crops the
+// bins the server already sends (2048 across the capture), so at high zoom one bin covers several
+// pixels. Each waterfall row keeps the span it was captured with, so history stays at its true
+// frequencies when the receiver retunes or the view moves.
+
+export interface View { loHz: number; hiHz: number }
+export const MAX_ZOOM = 32;
+
+export function captureView(centerHz: number, rateHz: number): View {
+  return { loHz: centerHz - rateHz / 2, hiHz: centerHz + rateHz / 2 };
+}
+
+/** A view of `widthHz` centred on `centerHz`, moved (not shrunk) to lie inside the capture. */
+export function clampView(centerHz: number, widthHz: number, capCenterHz: number, capRateHz: number): View {
+  const cap = captureView(capCenterHz, capRateHz);
+  const w = Math.min(widthHz, capRateHz);
+  const lo = Math.min(Math.max(centerHz - w / 2, cap.loHz), cap.hiHz - w);
+  return { loHz: lo, hiHz: lo + w };
+}
+
+/** Zoom by `factor` (>1 in, <1 out) keeping `anchorHz` at the same place on screen. Zoom is
+ *  limited to 1..MAX_ZOOM of the capture span. */
+export function zoomView(v: View, factor: number, anchorHz: number, capCenterHz: number, capRateHz: number): View {
+  const oldW = v.hiHz - v.loHz;
+  const w = Math.min(capRateHz, Math.max(capRateHz / MAX_ZOOM, oldW / factor));
+  const frac = oldW > 0 ? (anchorHz - v.loHz) / oldW : 0.5;
+  const lo = anchorHz - frac * w;
+  return clampView(lo + w / 2, w, capCenterHz, capRateHz);
+}
+
+export function zoomOf(v: View, capRateHz: number): number {
+  return capRateHz / Math.max(1, v.hiHz - v.loHz);
+}
+
+/** One row (FFT-shifted bins over centre +- rate/2) mapped onto `width` pixels of a view. Each
+ *  pixel shows the strongest bin it covers, or the nearest bin when narrower than a bin; NaN where
+ *  the row's capture does not cover the pixel. */
+export function rowToPixels(db: Float32Array, rowCenterHz: number, rowRateHz: number, v: View, width: number): Float32Array {
+  const n = db.length, out = new Float32Array(width).fill(NaN);
+  if (n === 0) return out;
+  const binHz = rowRateHz / n, lo0 = rowCenterHz - rowRateHz / 2, pxHz = (v.hiHz - v.loHz) / width;
+  for (let x = 0; x < width; x++) {
+    const f0 = v.loHz + x * pxHz, f1 = f0 + pxHz;
+    let a = Math.floor((f0 - lo0) / binHz), b = Math.ceil((f1 - lo0) / binHz);
+    if (b <= 0 || a >= n) continue;
+    a = Math.max(0, a); b = Math.min(n, Math.max(b, a + 1));
+    let m = -Infinity;
+    for (let i = a; i < b; i++) if (db[i]! > m) m = db[i]!;
+    out[x] = m;
+  }
+  return out;
+}
+
+/** Mouse-wheel / trackpad deltas -> whole tuning steps, keeping the remainder: one notch (~100 px)
+ *  is one step, and a trackpad's many small events do not race through the band. */
+export function wheelSteps(acc: number, ev: { deltaY: number; deltaMode: number }): { steps: number; acc: number } {
+  const px = ev.deltaY * (ev.deltaMode === 1 ? 40 : ev.deltaMode === 2 ? 800 : 1);
+  const total = acc - px;                         // wheel up (negative deltaY) tunes up
+  const steps = Math.trunc(total / 100);
+  return { steps, acc: total - steps * 100 };
+}

@@ -163,6 +163,29 @@ export class Listener {
     return this.settle(o);
   }
 
+  private nudgeTarget: number | null = null;
+  private nudging = false;
+  /** Tune by whole steps (mouse wheel, arrow keys). Bursts coalesce: at most one tune is in flight,
+   *  and the next one goes straight to the newest target, so fast scrolling never queues dozens of
+   *  commands (the server rate-limits them). The result snaps to the step. */
+  async nudge(steps: number, stepHz: number): Promise<void> {
+    if (steps === 0) return;
+    const base = this.nudgeTarget ?? this.settings.frequencyHz;
+    this.nudgeTarget = Math.max(stepHz, Math.round((base + steps * stepHz) / stepHz) * stepHz);
+    if (this.nudging) return;
+    this.nudging = true;
+    try {
+      while (this.nudgeTarget !== null) {
+        const hz: number = this.nudgeTarget;
+        if (hz === this.settings.frequencyHz) { this.nudgeTarget = null; break; }
+        const ok = await this.tune({ frequencyHz: hz });
+        if (this.nudgeTarget === hz || !ok) this.nudgeTarget = null;     // done, or refused: stop
+      }
+    } finally {
+      this.nudging = false;
+    }
+  }
+
   close(): void {
     this.offs.forEach((f) => f());
     if (this.channelId) void this.conn.command("channel.close", { channel: this.channelId });

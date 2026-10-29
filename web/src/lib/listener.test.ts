@@ -64,3 +64,18 @@ describe("Listener after the server closes its channel", () => {
     expect(l.channelId).toBe("ch1");
   });
 });
+
+describe("Listener.nudge", () => {
+  it("coalesces a burst into few tunes that end on the newest target, snapped to the step", async () => {
+    const c = new FakeConn();
+    const l = new Listener(c as unknown as Connection, "rx", settings(), () => {});
+    await l.open();
+    const burst = [l.nudge(1, 1000), l.nudge(1, 1000), l.nudge(1, 1000), l.nudge(1, 1000)];
+    await Promise.all(burst);
+    const tunes = c.ops.filter((o) => o.startsWith("channel.tune"));
+    expect(tunes.length).toBeLessThanOrEqual(2);
+    expect(l.settings.frequencyHz).toBe(7_078_000);
+    await l.nudge(-1, 500);
+    expect(l.settings.frequencyHz).toBe(7_077_500);
+  });
+});

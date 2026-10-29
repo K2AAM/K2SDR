@@ -105,6 +105,49 @@ def retune_recording_checks(page, timeout: float, problems: list[str]) -> None:
     print("retune-recording: warned, Cancel kept it, confirm ended it and retuned")
 
 
+def zoom_checks(page, timeout: float, problems: list[str]) -> None:
+    """Zoom buttons, Ctrl+wheel zoom, wheel tuning over the waterfall, click-to-tune when zoomed."""
+    t = timeout * 1000
+    page.get_by_text("dBFS", exact=False).first.wait_for(timeout=t)
+    zoom = page.get_by_label("Zoom", exact=True)
+    page.get_by_role("button", name="Zoom in").click()
+    page.get_by_role("button", name="Zoom in").click()
+    if zoom.inner_text() != "×4":
+        problems.append(f"two zoom-ins show {zoom.inner_text()!r}, not ×4")
+    fall = page.get_by_label("Waterfall")
+    box = fall.bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    before = page.locator("output.big").inner_text()
+    page.mouse.wheel(0, -100)                                   # one notch up: one 1 kHz step
+    for _ in range(int(timeout * 10)):
+        if page.locator("output.big").inner_text() != before:
+            break
+        time.sleep(0.1)
+    after = page.locator("output.big").inner_text()
+    hz = lambda txt: int(txt.replace(" MHz", "").replace(".", "").replace(" ", ""))   # noqa: E731
+    if hz(after) - hz(before) != 1000:
+        problems.append(f"wheel over the waterfall: {before} -> {after}, not one 1 kHz step")
+    page.keyboard.down("Control")
+    page.mouse.wheel(0, 300)                                    # Ctrl + wheel down: zoom out
+    page.keyboard.up("Control")
+    time.sleep(0.3)
+    z = float(zoom.inner_text().lstrip("×"))
+    if not 1 <= z < 4:
+        problems.append(f"Ctrl+wheel did not zoom out: {zoom.inner_text()!r}")
+    fall.click(position={"x": box["width"] * 0.75, "y": box["height"] / 2})   # click-to-tune in the zoomed view
+    time.sleep(0.5)
+    tuned = hz(page.locator("output.big").inner_text())
+    if tuned == hz(after):
+        problems.append("click on the zoomed waterfall did not tune")
+    for _ in range(8):
+        if page.get_by_role("button", name="Zoom out").is_disabled():
+            break
+        page.get_by_role("button", name="Zoom out").click()
+    if zoom.inner_text() != "×1":
+        problems.append(f"zoom out did not return to ×1: {zoom.inner_text()!r}")
+    print(f"zoom: ×4 ok, wheel {before} -> {after}, ctrl+wheel ×{z}, click tuned {tuned} Hz, back to ×1")
+
+
 OVERFLOW_JS = """() => {
   const w = document.documentElement.clientWidth, out = [];
   for (const el of document.querySelectorAll('body *')) {
@@ -122,7 +165,7 @@ FILLED_JS = """() => {
   let rows = 0;
   for (let y = 0; y < c.height; y += step) {
     let lit = 0;
-    for (let i = 0; i < c.width; i += 7) if (d[(y * c.width + i) * 4 + 3] > 0) lit++;
+    for (let i = 0; i < c.width; i += 7) { const k = (y * c.width + i) * 4; if (d[k] + d[k + 1] + d[k + 2] > 0) lit++; }
     if (lit > c.width / 7 / 2) rows++;
   }
   return rows;
@@ -179,6 +222,7 @@ def main() -> int:
     ap.add_argument("--record", action="store_true", help="also record 3 s and find it in the Recordings drawer")
     ap.add_argument("--retune-recording", action="store_true",
                     help="with the mock Airspy worker: a retune that would end a recording asks first")
+    ap.add_argument("--zoom", action="store_true", help="also check zoom and wheel tuning on the waterfall")
     ap.add_argument("--layout", action="store_true", help="also check phone widths 320-412 px for overflow")
     ap.add_argument("--mobile", action="store_true", help="iPhone-sized viewport (390x844, DPR 3, touch)")
     ap.add_argument("--settle", type=float, default=1.0, help="seconds to let the page run before checking")
@@ -267,6 +311,8 @@ recording = "{ROOT}/fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta"
                 record_checks(page, a.timeout, problems)
             if a.retune_recording:
                 retune_recording_checks(page, a.timeout, problems)
+            if a.zoom:
+                zoom_checks(page, a.timeout, problems)
             if a.layout:
                 c = next(c for c in ctx.cookies() if c["name"] == "k2_session")
                 layout_checks(browser, c, a.timeout, problems)

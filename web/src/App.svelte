@@ -142,7 +142,8 @@
     <div class="spectrum">
       {#key selected}
         <SpectrumView {conn} receiverId={selected} {marker} {stepHz}
-                      onTune={(hz) => listener?.tune({ frequencyHz: hz })} />
+                      onTune={(hz) => listener?.tune({ frequencyHz: hz })}
+                      onNudge={(n) => listener?.nudge(n, stepHz)} />
       {/key}
     </div>
     {#if listener}

@@ -6,6 +6,7 @@
   import type { Outcome } from "./lib/client";
   import { FrequencyParseError, formatFrequency, parseFrequency } from "./lib/freq";
   import type { Agc, Listener } from "./lib/listener";
+  import { wheelSteps } from "./lib/spectrum";
 
   interface Props {
     listener: Listener;
@@ -85,9 +86,12 @@
     }
     await listener.tune({ frequencyHz: hz });
   }
-  function wheel(ev: WheelEvent) {
+  let wheelAcc = 0;
+  function wheel(ev: WheelEvent) {                          // one notch = one step; bursts coalesce
     ev.preventDefault();
-    void tuneTo(freqHz + (ev.deltaY < 0 ? 1 : -1) * s.stepHz);
+    const r = wheelSteps(wheelAcc, ev);
+    wheelAcc = r.acc;
+    if (r.steps) void listener.nudge(r.steps, s.stepHz);
   }
 
   let loEdit = $state<number | null>(null);
