@@ -116,6 +116,19 @@ OVERFLOW_JS = """() => {
 }"""
 
 
+FILLED_JS = """() => {
+  const c = document.querySelector('canvas.fall'), x = c.getContext('2d');
+  const d = x.getImageData(0, 0, c.width, c.height).data, step = Math.max(1, Math.round(devicePixelRatio));
+  let rows = 0;
+  for (let y = 0; y < c.height; y += step) {
+    let lit = 0;
+    for (let i = 0; i < c.width; i += 7) if (d[(y * c.width + i) * 4 + 3] > 0) lit++;
+    if (lit > c.width / 7 / 2) rows++;
+  }
+  return rows;
+}"""
+
+
 def layout_checks(browser, cookie, timeout: float, problems: list[str]) -> None:
     """Phone widths (Android 320-412, iPhone 390): nothing may stick out past the right edge.
     bypass_csp only here, to measure with a script; the CSP checks run in the main context."""
@@ -132,7 +145,29 @@ def layout_checks(browser, cookie, timeout: float, problems: list[str]) -> None:
         print(f"layout {width}px: page {m['scroll']}px wide" + (f", over the edge: {m['over']}" if m["over"] else ""))
         if m["scroll"] > m["width"] or m["over"]:
             problems.append(f"layout at {width}px overflows: {m}")
+        if width == 390:
+            # The waterfall keeps its history when the page resizes (iOS toolbars do that all the time).
+            time.sleep(3)
+            before = page.evaluate(FILLED_JS)
+            page.set_viewport_size({"width": 390, "height": 760})
+            time.sleep(0.3)
+            after = page.evaluate(FILLED_JS)
+            print(f"waterfall rows with data: {before} before a resize, {after} after")
+            if after < before * 0.8:
+                problems.append(f"a resize wiped the waterfall: {before} -> {after} rows")
         ctx.close()
+    # Landscape phone: the spectrum and waterfall keep a usable height (the page scrolls instead).
+    ctx = browser.new_context(viewport={"width": 844, "height": 390}, device_scale_factor=3, is_mobile=True,
+                              has_touch=True, bypass_csp=True)
+    ctx.add_cookies([{"name": cookie["name"], "value": cookie["value"], "url": BASE}])
+    page = ctx.new_page()
+    page.goto(BASE + "/app/")
+    page.locator("header").get_by_text("connected").wait_for(timeout=timeout * 1000)
+    boxes = [page.get_by_label(n).bounding_box() for n in ("Spectrum", "Waterfall")]
+    print(f"landscape 844x390: spectrum {boxes[0]['height']:.0f} px, waterfall {boxes[1]['height']:.0f} px high")
+    if not 200 <= boxes[0]["height"] + boxes[1]["height"] <= 390:
+        problems.append(f"landscape spectrum/waterfall height out of 200..390 px: {boxes}")
+    ctx.close()
 
 
 def main() -> int:

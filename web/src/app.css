@@ -4,7 +4,8 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
-html, body, #app { height: 100%; margin: 0; }
+html, body { height: 100%; margin: 0; }
+#app { min-height: 100%; }   /* not a fixed height: a short (landscape) phone scrolls instead of squashing the waterfall */
 /* Phones: never wider than the screen. Safari (every iOS browser) let one wide item, probably a
    canvas's intrinsic size, widen the whole page so rows stopped wrapping and the right edge was cut
    off (Window 3 iPhone screenshot); Chromium does not, so these guard rather than fix a measured cause. */

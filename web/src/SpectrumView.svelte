@@ -50,11 +50,22 @@
     };
   });
 
-  function fit(c: HTMLCanvasElement): boolean {
+  function fit(c: HTMLCanvasElement, keep = false): boolean {
     const dpr = window.devicePixelRatio || 1;
     const w = Math.max(1, Math.round(c.clientWidth * dpr)), h = Math.max(1, Math.round(c.clientHeight * dpr));
-    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; return true; }
-    return false;
+    if (c.width === w && c.height === h) return false;
+    // Resizing a canvas clears it. iOS Safari resizes the page whenever its toolbars show or hide,
+    // which kept wiping the waterfall to a thin strip (Window 3): keep the history, scaled to the
+    // new width, top-aligned (newest rows are at the top).
+    let old: HTMLCanvasElement | null = null;
+    if (keep && c.width > 1 && c.height > 1) {
+      old = document.createElement("canvas");
+      old.width = c.width; old.height = c.height;
+      old.getContext("2d")?.drawImage(c, 0, 0);
+    }
+    c.width = w; c.height = h;
+    if (old) c.getContext("2d")?.drawImage(old, 0, 0, old.width, old.height, 0, 0, w, old.height * (w / old.width));
+    return true;
   }
 
   function onRow(m: SpectrumMsg) {
@@ -72,7 +83,7 @@
   function drawWaterfall(db: Float32Array, separator: boolean, gap: boolean) {
     const c = fallCanvas;
     if (!c || !levels) return;
-    fit(c);
+    fit(c, true);
     const ctx = c.getContext("2d");
     if (!ctx) return;
     const w = c.width, h = c.height;
@@ -151,8 +162,10 @@
 </script>
 
 <div class="view">
-  <canvas class="spec" bind:this={specCanvas} onclick={tuneAt} aria-label="Spectrum"></canvas>
-  <canvas class="fall" bind:this={fallCanvas} onclick={tuneAt} aria-label="Waterfall"></canvas>
+  <!-- Each canvas fills a box of its own, out of the layout flow: a canvas's pixel size (set from
+       its CSS size x DPR) must never feed back into the CSS size (it grew the page 3x per redraw). -->
+  <div class="box spec"><canvas bind:this={specCanvas} onclick={tuneAt} aria-label="Spectrum"></canvas></div>
+  <div class="box fall"><canvas class="fall" bind:this={fallCanvas} onclick={tuneAt} aria-label="Waterfall"></canvas></div>
   <div class="levels">
     <label><input type="checkbox" bind:checked={auto} /> Auto levels</label>
     {#if !auto}
@@ -165,7 +178,9 @@
 <style>
   .view { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 2fr);
           grid-template-columns: minmax(0, 1fr); height: 100%; min-height: 0; min-width: 0; overflow: hidden; }
-  canvas { width: 100%; height: 100%; min-height: 0; display: block; cursor: crosshair; touch-action: manipulation; }
+  .box { position: relative; min-height: 0; min-width: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair;
+           touch-action: manipulation; }
   .spec { background: #0b0e11; border-bottom: 1px solid var(--line); }
   .fall { background: #000; }
   .levels { position: absolute; top: 4px; right: 6px; display: flex; gap: .6rem; font-size: 12px;
