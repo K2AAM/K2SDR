@@ -219,8 +219,8 @@
 </div>
 
 <style>
-  .rig { display: grid; gap: .45rem; padding: .5rem .75rem; background: var(--panel); border-top: 1px solid var(--line); }
-  .freq { display: flex; align-items: center; gap: .5rem; }
+  .rig { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: .45rem; padding: .5rem .75rem; background: var(--panel); border-top: 1px solid var(--line); }
+  .freq { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
   .big { font-size: 1.6rem; font-variant-numeric: tabular-nums; letter-spacing: .02em; min-width: 11ch; text-align: center; }
   .stepbtn { width: 2.2rem; height: 2.2rem; font-size: 1.2rem; }
   .entry, .row { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .7rem; }

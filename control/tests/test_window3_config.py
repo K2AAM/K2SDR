@@ -19,3 +19,10 @@ def test_window3_config_loads(tmp_path):
     assert (rx.serial, rx.center_hz, rx.rate_hz, rx.freq_range_hz) == (0x3B52978026BA46DA, 7_100_000, 384000,
                                                                        (10_000, 165_000_000))
     assert cfg.web_dir == (tmp_path / "K2SDR/web/dist").resolve()
+
+
+def test_replay_tailnet_config_loads_and_opens_no_device(tmp_path):
+    shutil.copy(ROOT / "docs/ops/window3/k2websdr-replay-tailnet.toml", tmp_path / "k.toml")
+    cfg = load(tmp_path / "k.toml")
+    assert cfg.cookie_secure and "https://optiplexsdr.polecat-godzilla.ts.net:8443" in cfg.allowed_origins
+    assert all(r.airspyhf is None for r in cfg.receivers) and len(cfg.receivers) == 2

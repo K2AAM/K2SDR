@@ -105,6 +105,36 @@ def retune_recording_checks(page, timeout: float, problems: list[str]) -> None:
     print("retune-recording: warned, Cancel kept it, confirm ended it and retuned")
 
 
+OVERFLOW_JS = """() => {
+  const w = document.documentElement.clientWidth, out = [];
+  for (const el of document.querySelectorAll('body *')) {
+    const r = el.getBoundingClientRect();
+    if (r.width && r.right > w + 0.5 && !el.closest('.levels-hidden'))
+      out.push(`${el.tagName.toLowerCase()}.${[...el.classList].join('.')} right=${Math.round(r.right)}`);
+  }
+  return {width: w, scroll: document.documentElement.scrollWidth, over: out.slice(0, 12)};
+}"""
+
+
+def layout_checks(browser, cookie, timeout: float, problems: list[str]) -> None:
+    """Phone widths (Android 320-412, iPhone 390): nothing may stick out past the right edge.
+    bypass_csp only here, to measure with a script; the CSP checks run in the main context."""
+    for width in (320, 360, 390, 412):
+        ctx = browser.new_context(viewport={"width": width, "height": 800}, device_scale_factor=3, is_mobile=True,
+                                  has_touch=True, bypass_csp=True)
+        ctx.add_cookies([{"name": cookie["name"], "value": cookie["value"], "url": BASE}])
+        page = ctx.new_page()
+        page.goto(BASE + "/app/")
+        page.locator("header").get_by_text("connected").wait_for(timeout=timeout * 1000)
+        page.get_by_text("dBFS", exact=False).first.wait_for(timeout=timeout * 1000)
+        time.sleep(1)
+        m = page.evaluate(OVERFLOW_JS)
+        print(f"layout {width}px: page {m['scroll']}px wide" + (f", over the edge: {m['over']}" if m["over"] else ""))
+        if m["scroll"] > m["width"] or m["over"]:
+            problems.append(f"layout at {width}px overflows: {m}")
+        ctx.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--screenshot", type=Path)
@@ -114,6 +144,7 @@ def main() -> int:
     ap.add_argument("--record", action="store_true", help="also record 3 s and find it in the Recordings drawer")
     ap.add_argument("--retune-recording", action="store_true",
                     help="with the mock Airspy worker: a retune that would end a recording asks first")
+    ap.add_argument("--layout", action="store_true", help="also check phone widths 320-412 px for overflow")
     ap.add_argument("--mobile", action="store_true", help="iPhone-sized viewport (390x844, DPR 3, touch)")
     ap.add_argument("--settle", type=float, default=1.0, help="seconds to let the page run before checking")
     a = ap.parse_args()
@@ -201,6 +232,9 @@ recording = "{ROOT}/fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta"
                 record_checks(page, a.timeout, problems)
             if a.retune_recording:
                 retune_recording_checks(page, a.timeout, problems)
+            if a.layout:
+                c = next(c for c in ctx.cookies() if c["name"] == "k2_session")
+                layout_checks(browser, c, a.timeout, problems)
             time.sleep(a.settle)
             if a.screenshot:
                 page.screenshot(path=str(a.screenshot))
