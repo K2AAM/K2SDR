@@ -171,7 +171,9 @@
   .conn.reconnecting { color: var(--warn); }
   .status-link { color: var(--accent); }
   .hdrbtn { background: #0f1215; border: 1px solid var(--line); border-radius: 4px; padding: .15rem .5rem; cursor: pointer; }
-  main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr);
+  /* The spectrum + waterfall always get at least 240 px (or 45 % of the screen height), even when
+     the controls would fill a short landscape phone screen: the page scrolls instead. */
+  main { display: grid; grid-template-rows: auto minmax(max(240px, 45vh), 1fr) auto; grid-template-columns: minmax(0, 1fr);
          min-height: 0; min-width: 0; }
   .rx { display: flex; flex-wrap: wrap; gap: .3rem 1rem; padding: .3rem .75rem; font-size: 13px;
         border-bottom: 1px solid var(--line); }
