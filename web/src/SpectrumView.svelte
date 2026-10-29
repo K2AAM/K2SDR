@@ -163,7 +163,8 @@
 </div>
 
 <style>
-  .view { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 2fr); height: 100%; min-height: 0; }
+  .view { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 2fr);
+          grid-template-columns: minmax(0, 1fr); height: 100%; min-height: 0; min-width: 0; overflow: hidden; }
   canvas { width: 100%; height: 100%; min-height: 0; display: block; cursor: crosshair; touch-action: manipulation; }
   .spec { background: #0b0e11; border-bottom: 1px solid var(--line); }
   .fall { background: #000; }

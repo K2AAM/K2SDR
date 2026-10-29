@@ -162,7 +162,7 @@
 {/if}
 
 <style>
-  :global(#app) { display: grid; grid-template-rows: auto 1fr; }
+  :global(#app) { display: grid; grid-template-rows: auto 1fr; grid-template-columns: minmax(0, 1fr); }
   header { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; padding: .4rem .75rem;
            background: var(--panel); border-bottom: 1px solid var(--line); }
   .brand { font-weight: 600; }
@@ -171,7 +171,8 @@
   .conn.reconnecting { color: var(--warn); }
   .status-link { color: var(--accent); }
   .hdrbtn { background: #0f1215; border: 1px solid var(--line); border-radius: 4px; padding: .15rem .5rem; cursor: pointer; }
-  main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; }
+  main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr);
+         min-height: 0; min-width: 0; }
   .rx { display: flex; flex-wrap: wrap; gap: .3rem 1rem; padding: .3rem .75rem; font-size: 13px;
         border-bottom: 1px solid var(--line); }
   .spectrum { min-height: 0; }

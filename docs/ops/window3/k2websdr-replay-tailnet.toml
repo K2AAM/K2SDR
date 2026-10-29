@@ -1,0 +1,28 @@
+# UI checks from the Mac/iPhone/Android with NO hardware: replayed real Airspy clips, reached over
+# Tailscale Serve exactly like Window 3. Opens no SDR, so OpenWebRX keeps running.
+# Copy to ~/k2websdr-replay-tailnet.toml as k2dev (paths below are relative to ~).
+# Same state as Window 3 (same login); never run it while the Window 3 service runs.
+[server]
+host = "127.0.0.1"
+port = 8075
+state_dir = ".k2websdr-w3/state"
+runtime_dir = ".k2websdr-w3/run"
+worker_bin = "K2SDR/build/worker/ksdr-worker"
+ledger = "K2SDR/ledger/modes.v1.json"
+web_dir = "K2SDR/web/dist"
+allowed_hosts = ["optiplexsdr.polecat-godzilla.ts.net:8443", "optiplexsdr.polecat-godzilla.ts.net",
+                 "127.0.0.1:8075"]
+allowed_origins = ["https://optiplexsdr.polecat-godzilla.ts.net:8443"]
+cookie_secure = true
+trusted_proxies = ["127.0.0.1/32"]
+recordings_cap_bytes = 1073741824
+
+[[receivers]]
+id = "replay-wwv"
+label = "Replay: WWV 10 MHz (real Airspy clip)"
+recording = "K2SDR/fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta"
+
+[[receivers]]
+id = "replay-ft8"
+label = "Replay: 40 m FT8 (real Airspy clip)"
+recording = "K2SDR/fixtures/real/airspyhf/airspyhf_ft8_40m_48k.sigmf-meta"

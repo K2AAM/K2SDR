@@ -5,5 +5,11 @@
 }
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; margin: 0; }
+/* Phones: never wider than the screen. Safari (every iOS browser) let one wide item, probably a
+   canvas's intrinsic size, widen the whole page so rows stopped wrapping and the right edge was cut
+   off (Window 3 iPhone screenshot); Chromium does not, so these guard rather than fix a measured cause. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { overflow-x: hidden; }
+button, select, input, canvas { max-width: 100%; min-width: 0; }
 body { background: var(--bg); color: var(--text); font: 14px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; }
 button, select, input { font: inherit; color: inherit; }
