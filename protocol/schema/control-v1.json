@@ -745,6 +745,7 @@
         "E_RATE_LIMITED",
         "E_STORAGE_FULL",
         "E_UNKNOWN_RECORDING",
+        "E_RECORDING_ACTIVE",
         "E_INTERNAL"
       ],
       "title": "ErrorCode",
@@ -1555,6 +1556,11 @@
           ],
           "default": null,
           "title": "Center Hz"
+        },
+        "end_recordings": {
+          "default": false,
+          "title": "End Recordings",
+          "type": "boolean"
         },
         "if_capture_gen": {
           "anyOf": [

@@ -176,6 +176,34 @@ async def test_receiver_retune_away_interrupts_the_recording(tmp_path):
 
 
 @async_test
+async def test_a_retune_that_would_end_a_recording_asks_first(tmp_path):
+    # Adam, 2026-10-28: warn that it is still recording, with an option to end it.
+    away = CENTER + 10 * RATE
+    core, rt, cat = await make(tmp_path, script=[("apply", CENTER + 2000), ("apply", away)])
+    with core.store.txn() as t:          # a replay centre is fixed; widen it as a tunable device's
+        t.replace("receivers", RX, "capabilities", "freq_range_hz", value=[CENTER - RATE, away + RATE])
+    op = Client(core, OPERATOR)
+    await op.subscribe()
+    _, res = await start(op, CENTER + 1000)
+    await op.outcome(await op.send("receiver.claim", receiver=RX))
+    ack, _ = await op.outcome(await op.send("receiver.set_capture", receiver=RX, center_hz=away))
+    assert ack.status == "rejected" and ack.code == "E_RECORDING_ACTIVE", ack
+    assert res.recording in ack.detail and str(CENTER + 1000) in ack.detail
+    assert cat.get(res.recording)["status"] == "recording"                 # untouched
+    # A retune the recording survives needs no confirmation.
+    ack, r = await op.outcome(await op.send("receiver.set_capture", receiver=RX, center_hz=CENTER + 2000))
+    assert ack.status == "accepted", ack
+    _, r = await op.outcome(await op.send("receiver.set_capture", receiver=RX, center_hz=away, end_recordings=True))
+    assert r.status == "applied"
+    for _ in range(50):
+        if cat.get(res.recording)["status"] != "recording":
+            break
+        await __import__("asyncio").sleep(0.01)
+    assert cat.get(res.recording)["status"] == "interrupted"
+    await core.shutdown()
+
+
+@async_test
 async def test_shutdown_and_restart_leave_no_recording_marked_running(tmp_path):
     core, rt, cat = await make(tmp_path)
     _, res = await start(Client(core, OPERATOR))

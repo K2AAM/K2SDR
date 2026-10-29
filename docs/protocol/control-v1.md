@@ -191,6 +191,12 @@ doubling to 30 s, and resets after a worker ran for 60 s.
   runs until stopped by its owner (any session of the same user) or an admin. It also ends when
   storage runs out, or when a receiver retune leaves its frequency outside the capture
   (`interrupted`). At most 4 per user.
+- A `receiver.set_capture` that would leave an active recording (anyone's) outside the new
+  capture is rejected with `E_RECORDING_ACTIVE`. The detail names the recordings. The same
+  command with `end_recordings: true` retunes and ends them (`interrupted`); the UI asks first
+  ("Still recording … End recording and retune / Cancel"). A recording can still end
+  `interrupted` without that confirmation in two cases: the device lands somewhere other than
+  requested, or a recording starts while the retune is in flight.
 - **Result:** `result.recording` and `result.channel`. While active, `recordings.<id>` shows
   frequency, mode, file, seconds, bytes and gaps (discontinuities inside the file), updated
   about once a second.

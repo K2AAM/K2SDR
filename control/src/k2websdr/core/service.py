@@ -438,6 +438,16 @@ class ControlCore:
                 raise Rejected(ErrorCode.E_OUT_OF_RANGE, f"center_hz outside {rng[0]}..{rng[1]}")
         if a.sample_rate_hz is not None and a.sample_rate_hz not in caps["sample_rates_hz"]:
             raise Rejected(ErrorCode.E_OUT_OF_RANGE, f"sample_rate_hz not in {caps['sample_rates_hz']}")
+        # A retune that would leave an active recording outside the capture ends it: say so first
+        # and let the user confirm (Adam, 2026-10-28: warn, with an option to end it).
+        cut = self._recordings_cut_by(rt, a.center_hz, a.sample_rate_hz)
+        if cut and not a.end_recordings:
+            names = ", ".join(f"{r.id} ({r.channel.frequency_hz} Hz {r.channel.mode}, {r.owner})" for r in cut)
+            raise Rejected(ErrorCode.E_RECORDING_ACTIVE,
+                           f"this retune would end {len(cut)} active recording(s): {names}; "
+                           "send end_recordings to end them and retune")
+        if cut:
+            log.info("cmd %s: %s confirmed ending %s", cmd.id[-6:], s.principal.user, [r.id for r in cut])
         self._check_capacity(rt)                  # before anything is marked pending or queued
         _rev, fut = rt.submit_set_capture(cmd.id, a.center_hz, a.sample_rate_hz,
                                           authorize=self._authorizer(s, rt, "hw.retune", a.if_capture_gen))
@@ -539,6 +549,22 @@ class ControlCore:
         if problem:
             raise Rejected(ErrorCode.E_OUT_OF_RANGE, problem)
         return frequency_hz - center
+
+    def _recordings_cut_by(self, rt: ReceiverRuntime, center_hz: int | None,
+                           rate_hz: int | None) -> list[_Recording]:
+        """Active recordings on this receiver that a capture of (center, rate) could not keep."""
+        center0, rate0, complex_iq = self._capture_now(rt)
+        center = center_hz if center_hz is not None else center0
+        rate = rate_hz if rate_hz is not None else rate0
+        out = []
+        for r in self._recs.values():
+            ch = r.channel
+            if ch.receiver != rt.id:
+                continue
+            if center is None or rate is None or receiver_mode_problem(ch.mode, rate, complex_iq) or \
+                    span_problem(ch.mode, ch.frequency_hz, center, rate, ch.passband):
+                out.append(r)
+        return out
 
     @staticmethod
     def _take_gen(ch: _Channel, worker_gen: int, *, new_worker: bool = False) -> None:

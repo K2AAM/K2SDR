@@ -96,6 +96,7 @@ class ReceiverSetCaptureArgs(Strict):
     center_hz: Hz | None = None
     sample_rate_hz: SampleRateHz | None = None
     if_capture_gen: Gen | None = None   # optimistic precondition -> E_STALE_PRECONDITION
+    end_recordings: bool = False        # confirm ending recordings the new capture cannot cover
 
     @model_validator(mode="after")
     def _changes_something(self) -> "ReceiverSetCaptureArgs":

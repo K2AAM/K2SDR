@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { AudioPlayer } from "./lib/audio";
-  import { Connection, type ConnStatus } from "./lib/client";
+  import { Connection, type ConnStatus, type Outcome } from "./lib/client";
   import { formatFrequency } from "./lib/freq";
   import { Listener, loadSettings } from "./lib/listener";
   import type { Json } from "./lib/patch";
@@ -99,11 +99,16 @@
     await conn.command("recording.stop", { recording: id });
   }
 
-  async function retune(hz: number) {
-    if (!selected) return;
+  /** Moves the receiver (for everyone). Returns the set_capture outcome: E_RECORDING_ACTIVE asks to
+   *  confirm ending recordings the new capture cannot cover (endRecordings). */
+  async function retune(hz: number, endRecordings = false): Promise<Outcome | null> {
+    if (!selected) return null;
     await conn.command("receiver.claim", { receiver: selected });
-    await conn.command("receiver.set_capture", { receiver: selected, center_hz: hz });
+    const args: Record<string, Json> = { receiver: selected, center_hz: hz };
+    if (endRecordings) args.end_recordings = true;
+    const o = await conn.command("receiver.set_capture", args);
     await conn.command("receiver.release", { receiver: selected });
+    return o;
   }
 
   const statusText: Record<ConnStatus, string> = {
