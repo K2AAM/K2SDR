@@ -92,7 +92,9 @@
     const visible = rowToPixels(db, span.centerHz, span.rateHz, v, 512).filter((x) => !Number.isNaN(x));
     levels = auto ? autoLevels(visible, newGen ? null : levels) : { minDb: manualMin, maxDb: manualMax };
     const mark = newGen || (m.flags & Flags.NEW_GEN) !== 0 ? "sep"
-      : (m.flags & (Flags.DISCONTINUITY | Flags.SERVER_DROP)) !== 0 ? "gap" : null;
+      // Only real sample loss gets the orange tick. SERVER_DROP on spectrum just means the server
+      // sent a newer row instead of an unsent older one (by design): not a gap in the signal.
+      : (m.flags & Flags.DISCONTINUITY) !== 0 ? "gap" : null;
     rows.unshift({ db, centerHz: span.centerHz, rateHz: span.rateHz, mark });
     if (rows.length > MAX_ROWS) rows.length = MAX_ROWS;
     drawNewRow(rows[0]!);
