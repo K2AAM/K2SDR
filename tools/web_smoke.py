@@ -172,6 +172,52 @@ FILLED_JS = """() => {
 }"""
 
 
+RIGHT_BLACK_JS = """() => {
+  // Rows 40..70 (CSS px) below the top: older history. Fraction of their right quarter that is black.
+  const c = document.querySelector('canvas.fall'), x = c.getContext('2d'), r = Math.round(devicePixelRatio || 1);
+  const d = x.getImageData(0, 0, c.width, c.height).data;
+  let black = 0, n = 0;
+  for (let y = 40 * r; y < 70 * r && y < c.height; y += r)
+    for (let i = Math.floor(c.width * 0.75); i < c.width; i += 5) {
+      const k = (y * c.width + i) * 4; n++; if (d[k] + d[k + 1] + d[k + 2] === 0) black++;
+    }
+  return n ? black / n : 0;
+}"""
+
+
+def retune_waterfall_checks(browser, cookie, timeout: float, problems: list[str]) -> None:
+    """After a receiver retune, old waterfall rows are remapped to their true frequencies, not left
+    scrolling under the new axis (Adam, 2026-10-30). The watched page listens on 10.150 MHz, inside
+    both windows; a second window retunes the receiver 10.000 -> 10.300 MHz. The watched page's
+    channel stays valid, so its layout does not change (a resize already redraws and would hide
+    the bug). Old rows covered 9.808-10.192 MHz; in the new window 10.108-10.492 MHz all but their
+    left ~22 % has no data, so the right quarter must be black."""
+    t = timeout * 1000
+    ctx = browser.new_context(viewport={"width": 1000, "height": 800}, bypass_csp=True)
+    ctx.add_cookies([{"name": cookie["name"], "value": cookie["value"], "url": BASE}])
+    page = ctx.new_page()
+    page.goto(BASE + "/app/")
+    page.get_by_text("dBFS", exact=False).first.wait_for(timeout=t)
+    page.get_by_label("Frequency entry").fill("10150 kHz")          # inside both windows
+    page.get_by_role("button", name="Tune").click()
+    page.locator("output.big").filter(has_text="10.150 000 MHz").wait_for(timeout=t)
+    time.sleep(6)
+    before = page.evaluate(RIGHT_BLACK_JS)
+    other = ctx.new_page()
+    other.goto(BASE + "/app/")
+    other.get_by_text("dBFS", exact=False).first.wait_for(timeout=t)
+    other.get_by_label("Frequency entry").fill("10300 kHz")
+    other.get_by_role("button", name="Tune").click()
+    other.get_by_role("button", name="Retune receiver to 10.300 000 MHz").click()
+    page.locator("main").get_by_text("Centre 10.300 000 MHz").wait_for(timeout=t)
+    time.sleep(1)
+    after = page.evaluate(RIGHT_BLACK_JS)
+    print(f"retune waterfall: right quarter of older rows black {before:.0%} before, {after:.0%} after 10.000 -> 10.300 MHz")
+    if not (before < 0.1 and after > 0.9):
+        problems.append(f"old waterfall rows not remapped after a retune: black {before:.0%} -> {after:.0%}")
+    ctx.close()
+
+
 def layout_checks(browser, cookie, timeout: float, problems: list[str]) -> None:
     """Phone widths (Android 320-412, iPhone 390): nothing may stick out past the right edge.
     bypass_csp only here, to measure with a script; the CSP checks run in the main context."""
@@ -220,6 +266,8 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=15.0)
     ap.add_argument("--rig", action="store_true", help="also drive the RIG: audio, frequency entry, mode")
     ap.add_argument("--record", action="store_true", help="also record 3 s and find it in the Recordings drawer")
+    ap.add_argument("--retune-waterfall", action="store_true",
+                    help="with the mock Airspy worker: a retune remaps the waterfall history")
     ap.add_argument("--retune-recording", action="store_true",
                     help="with the mock Airspy worker: a retune that would end a recording asks first")
     ap.add_argument("--zoom", action="store_true", help="also check zoom and wheel tuning on the waterfall")
@@ -231,6 +279,7 @@ def main() -> int:
 
     if not (ROOT / "web/dist/index.html").is_file():
         raise SystemExit("web/dist missing: run `make web`")
+    mock = a.retune_recording or a.retune_waterfall      # a tunable (mock Airspy) receiver
     tmp = Path(tempfile.mkdtemp(prefix="k2-web-smoke-"))
     cfg = tmp / "k2.toml"
     cfg.write_text(f'''[server]
@@ -238,7 +287,7 @@ host = "127.0.0.1"
 port = {PORT}
 state_dir = "{tmp}/state"
 runtime_dir = "{tmp}/run"
-worker_bin = "{ROOT}/build/worker/{'ksdr-worker-airspyhf-mock' if a.retune_recording else 'ksdr-worker'}"
+worker_bin = "{ROOT}/build/worker/{'ksdr-worker-airspyhf-mock' if mock else 'ksdr-worker'}"
 ledger = "{ROOT}/ledger/modes.v1.json"
 web_dir = "{ROOT}/web/dist"
 ''' + (('''
@@ -250,7 +299,7 @@ serial = "A1B2C3D4E5F60718"
 center_hz = 10000000
 rate_hz = 384000
 freq_range_hz = [10000, 30000000]
-''') if a.retune_recording else f'''
+''') if mock else f'''
 [[receivers]]
 id = "replay-wwv"
 label = "Replay: WWV 10 MHz"
@@ -313,6 +362,9 @@ recording = "{ROOT}/fixtures/real/airspyhf/airspyhf_wwv10_48k.sigmf-meta"
                 retune_recording_checks(page, a.timeout, problems)
             if a.zoom:
                 zoom_checks(page, a.timeout, problems)
+            if a.retune_waterfall:
+                c = next(c for c in ctx.cookies() if c["name"] == "k2_session")
+                retune_waterfall_checks(browser, c, a.timeout, problems)
             if a.layout:
                 c = next(c for c in ctx.cookies() if c["name"] == "k2_session")
                 layout_checks(browser, c, a.timeout, problems)

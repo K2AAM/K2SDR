@@ -194,9 +194,12 @@ doubling to 30 s, and resets after a worker ran for 60 s.
 - A `receiver.set_capture` that would leave an active recording (anyone's) outside the new
   capture is rejected with `E_RECORDING_ACTIVE`. The detail names the recordings. The same
   command with `end_recordings: true` retunes and ends them (`interrupted`); the UI asks first
-  ("Still recording … End recording and retune / Cancel"). A recording can still end
-  `interrupted` without that confirmation in two cases: the device lands somewhere other than
-  requested, or a recording starts while the retune is in flight.
+  ("Still recording … End recording and retune / Cancel"). The check runs again when the retune
+  reaches the front of the hardware queue. A recording that is not in the confirmed set by then
+  fails the retune with `E_RECORDING_ACTIVE`; a recording that is still opening counts too.
+  `recording.start` is refused (`E_BUSY`) while a queued or running retune would not cover it.
+  A recording can still end `interrupted` without confirmation only when the device lands
+  somewhere other than requested.
 - **Result:** `result.recording` and `result.channel`. While active, `recordings.<id>` shows
   frequency, mode, file, seconds, bytes and gaps (discontinuities inside the file), updated
   about once a second.
