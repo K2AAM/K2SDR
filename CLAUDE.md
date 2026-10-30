@@ -74,7 +74,8 @@ invent features, or weaken explicit requirements unless Adam asks.
   B8 and B9 seen on hardware. B4 10-hour run (`docs/ops/b4-results-2026-10-28.md`): 0 dropped
   samples, CPU/RSS flat. Since then: phone layout fixed (Adam's iPhone, 2026-10-30), waterfall
   zoom + wheel tuning. UI checks without hardware: `docs/ops/window3/k2websdr-replay-tailnet.toml`.
-  Open: worker CPU split (`--only-cpu`, needs a hardware window). WWV 10 MHz hum: likely the
+  CPU split measured (`docs/ops/cpu-split-2026-10-30.md`): driver 2.7 %, spectrum ~3 %, ~6.3 %
+  per 384k channel on the Optiplex (about half the cloud CPU's speed). WWV 10 MHz hum: likely the
   antenna/RF (Adam, 2026-10-30; also faint on OWRX): recheck with the LZ1AQ loop, with the H3 sweep.
   (Retunes now warn before ending an active recording: Adam, 2026-10-28.)
   M1 branches: `m1/<topic>`.
