@@ -121,10 +121,16 @@
 
   const rowH = () => Math.max(1, Math.round(window.devicePixelRatio || 1));   // one CSS pixel per row
 
+  // The window the waterfall pixels were drawn for. Scrolling old pixels is only right while it is
+  // unchanged: after a retune (or a zoom that follows it) the history must be remapped, or old
+  // 10 MHz rows sit under a new 15 MHz axis (Adam, 2026-10-30).
+  let drawnView: View | null = null;
+  const sameView = (a: View | null, b: View) => a !== null && a.loHz === b.loHz && a.hiHz === b.hiHz;
+
   function drawNewRow(r: Row) {
     const c = fallCanvas, v = shown();
     if (!c || !levels || !v) return;
-    if (fit(c)) { redrawWaterfall(); return; }
+    if (fit(c) || !sameView(drawnView, v)) { redrawWaterfall(); return; }
     const ctx = c.getContext("2d");
     if (!ctx) return;
     const w = c.width, h = c.height, rh = rowH();
@@ -139,6 +145,7 @@
     const ctx = c.getContext("2d");
     if (!ctx) return;
     const w = c.width, h = c.height, rh = rowH();
+    drawnView = v;
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, w, h);
     for (let i = 0; i < rows.length && i * rh < h; i++) paintRow(ctx, rows[i]!, v, w, i * rh, rh);

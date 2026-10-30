@@ -153,6 +153,7 @@ class ReceiverRuntime:
         self._link_factory = link_factory
         self._link = None
         self._queue: asyncio.Queue[_Queued] = asyncio.Queue()
+        self._pending_caps: list[_Queued] = []     # set_capture commands queued or executing, in order
         self._executor: asyncio.Task | None = None
         self._restart_task: asyncio.Task | None = None
         self._stopping = False
@@ -368,8 +369,16 @@ class ReceiverRuntime:
                     requested=value, applied=cur["applied"], status="pending", cmd=cmd_id,
                     verified=cur["verified"] if cur["applied"] is not None else "none"))
         fut = asyncio.get_running_loop().create_future()
-        self._queue.put_nowait(_Queued(cmd_id, center_hz, rate_hz, fut, authorize))
+        q = _Queued(cmd_id, center_hz, rate_hz, fut, authorize)
+        self._pending_caps.append(q)
+        self._queue.put_nowait(q)
         return self.store.rev, fut
+
+    @property
+    def pending_captures(self) -> list[tuple[int | None, int | None]]:
+        """(center_hz, rate_hz) of set_capture commands queued or executing, oldest first; None:
+        that field is unchanged by the command."""
+        return [(q.center_hz, q.rate_hz) for q in self._pending_caps]
 
     def submit_set_hw_gain(self, cmd_id: str, gain: m.HwGain,
                            authorize: Authorizer | None = None) -> tuple[int, asyncio.Future]:
@@ -421,6 +430,8 @@ class ReceiverRuntime:
                 else:
                     rev = self._record_applied(ap, cmd_id=q.cmd_id, fields=self._fields(q))
                     outcome = CommandOutcome("applied", rev, capture_gen=ap.capture_gen)
+        if q in self._pending_caps:
+            self._pending_caps.remove(q)
         if not q.future.done():
             q.future.set_result(outcome)
 

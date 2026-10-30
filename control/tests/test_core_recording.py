@@ -34,11 +34,11 @@ def catalog(tmp: Path, cap=10**9, min_free=0) -> RecordingCatalog:
     return RecordingCatalog(conn, StoragePolicy(tmp / "rec", cap, min_free))
 
 
-async def make(tmp, script=(), **kw):
+async def make(tmp, script=(), gate=None, **kw):
     FakeWorker.instances.clear()
     cat = catalog(tmp, **kw)
     core = ControlCore(ledger=m.LedgerSummary(version=1, available=M1), recordings=cat)
-    rt = core.add_receiver(rx_config(RX, restart_backoff=0.01), fake_factory(deque(script)))
+    rt = core.add_receiver(rx_config(RX, restart_backoff=0.01), fake_factory(deque(script), gate=gate))
     await core.start()
     return core, rt, cat
 
@@ -200,6 +200,70 @@ async def test_a_retune_that_would_end_a_recording_asks_first(tmp_path):
             break
         await __import__("asyncio").sleep(0.01)
     assert cat.get(res.recording)["status"] == "interrupted"
+    await core.shutdown()
+
+
+async def _queued_retune_setup(tmp_path):
+    """A first retune held in flight (gate) and a second one queued behind it."""
+    import asyncio
+    gate = asyncio.Event()
+    away = CENTER + 10 * RATE
+    core, rt, cat = await make(tmp_path, script=[("apply", CENTER + 2000), ("apply", away)], gate=gate)
+    with core.store.txn() as t:
+        t.replace("receivers", RX, "capabilities", "freq_range_hz", value=[CENTER - RATE, away + RATE])
+    op = Client(core, OPERATOR)
+    await op.subscribe()
+    await op.outcome(await op.send("receiver.claim", receiver=RX))
+    first = await op.send("receiver.set_capture", receiver=RX, center_hz=CENTER + 2000)
+    second = await op.send("receiver.set_capture", receiver=RX, center_hz=away)
+    for _ in range(50):
+        if len(rt.pending_captures) == 2:
+            break
+        await asyncio.sleep(0.01)
+    assert rt.pending_captures == [(CENTER + 2000, None), (away, None)]
+    return core, rt, cat, op, gate, first, second
+
+
+@async_test
+async def test_a_recording_cannot_start_into_a_queued_retune_it_would_not_survive(tmp_path):
+    # Adam, 2026-10-30: a recording started while an incompatible retune waited was then ended
+    # without confirmation. Now refused up front; a compatible one is still allowed.
+    import asyncio
+    core, rt, cat, op, gate, first, second = await _queued_retune_setup(tmp_path)
+    ack, _ = await start(op, CENTER + 1000)
+    assert ack.status == "rejected" and ack.code == "E_BUSY" and "pending retune" in ack.detail, ack
+    gate.set()
+    _, r1 = await op.outcome(first)
+    _, r2 = await op.outcome(second)
+    assert r1.status == r2.status == "applied"
+    assert not rt.pending_captures
+    ack, res = await start(op, CENTER + 10 * RATE + 1000)                    # fits the new capture
+    assert ack.status == "accepted" and res.status == "applied", (ack, res)
+    await asyncio.sleep(0)
+    await core.shutdown()
+
+
+@async_test
+async def test_a_queued_retune_rechecks_recordings_before_it_runs(tmp_path, monkeypatch=None):
+    # Defence in depth: even if a recording got in while the retune waited, the retune is refused
+    # when it reaches the front of the queue instead of ending it unconfirmed.
+    import asyncio
+    core, rt, cat, op, gate, first, second = await _queued_retune_setup(tmp_path)
+    real = type(rt).pending_captures
+    type(rt).pending_captures = property(lambda self: [])                   # let the start slip in
+    try:
+        ack, res = await start(op, CENTER + 1000)
+    finally:
+        type(rt).pending_captures = real
+    assert ack.status == "accepted" and res.status == "applied", (ack, res)
+    gate.set()
+    _, r1 = await op.outcome(first)
+    ack2, r2 = await op.outcome(second)
+    assert r1.status == "applied"
+    assert r2.status == "failed" and r2.code == "E_RECORDING_ACTIVE" and res.recording in r2.detail, r2
+    await asyncio.sleep(0.05)
+    assert cat.get(res.recording)["status"] == "recording"                  # not ended
+    assert rt.store.view()["receivers"][RX]["capture"]["center_hz"]["applied"] == CENTER + 2000
     await core.shutdown()
 
 

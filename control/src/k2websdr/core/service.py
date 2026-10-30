@@ -442,15 +442,29 @@ class ControlCore:
         # and let the user confirm (Adam, 2026-10-28: warn, with an option to end it).
         cut = self._recordings_cut_by(rt, a.center_hz, a.sample_rate_hz)
         if cut and not a.end_recordings:
-            names = ", ".join(f"{r.id} ({r.channel.frequency_hz} Hz {r.channel.mode}, {r.owner})" for r in cut)
             raise Rejected(ErrorCode.E_RECORDING_ACTIVE,
-                           f"this retune would end {len(cut)} active recording(s): {names}; "
+                           f"this retune would end {len(cut)} active recording(s): {self._rec_names(cut)}; "
                            "send end_recordings to end them and retune")
         if cut:
-            log.info("cmd %s: %s confirmed ending %s", cmd.id[-6:], s.principal.user, [r.id for r in cut])
+            log.info("cmd %s: %s confirmed ending %s", cmd.id[-6:], s.principal.user, [c.id for c in cut])
+        confirmed = {c.id for c in cut}
+        base_check = self._authorizer(s, rt, "hw.retune", a.if_capture_gen)
+
+        def check() -> tuple[ErrorCode, str] | None:
+            # Re-checked when the retune reaches the front of the queue: a recording that started
+            # while it waited was not part of the confirmation and must not be ended silently.
+            denied = base_check()
+            if denied:
+                return denied
+            new = [c for c in self._recordings_cut_by(rt, a.center_hz, a.sample_rate_hz) if c.id not in confirmed]
+            if new:
+                return (ErrorCode.E_RECORDING_ACTIVE,
+                        f"a recording started while this retune waited and would end: {self._rec_names(new)}; "
+                        "send end_recordings to end it and retune")
+            return None
+
         self._check_capacity(rt)                  # before anything is marked pending or queued
-        _rev, fut = rt.submit_set_capture(cmd.id, a.center_hz, a.sample_rate_hz,
-                                          authorize=self._authorizer(s, rt, "hw.retune", a.if_capture_gen))
+        _rev, fut = rt.submit_set_capture(cmd.id, a.center_hz, a.sample_rate_hz, authorize=check)
         key = (s.principal.user, cmd.id)
         self._in_flight.add(key)
         rec = self._reply_ack(s, cmd.id, "accepted")
@@ -550,21 +564,30 @@ class ControlCore:
             raise Rejected(ErrorCode.E_OUT_OF_RANGE, problem)
         return frequency_hz - center
 
+    @staticmethod
+    def _cannot_keep(mode: str, frequency_hz: int, passband, center: int | None, rate: int | None,
+                     complex_iq: bool) -> bool:
+        return center is None or rate is None or bool(receiver_mode_problem(mode, rate, complex_iq)) or \
+            bool(span_problem(mode, frequency_hz, center, rate, passband))
+
     def _recordings_cut_by(self, rt: ReceiverRuntime, center_hz: int | None,
-                           rate_hz: int | None) -> list[_Recording]:
-        """Active recordings on this receiver that a capture of (center, rate) could not keep."""
+                           rate_hz: int | None) -> list[_Channel]:
+        """Recording channels on this receiver (active, or still opening) that a capture of
+        (center, rate) could not keep."""
         center0, rate0, complex_iq = self._capture_now(rt)
         center = center_hz if center_hz is not None else center0
         rate = rate_hz if rate_hz is not None else rate0
+        return [ch for ch in self._channels.values()
+                if ch.job and ch.receiver == rt.id and not ch.closing
+                and self._cannot_keep(ch.mode, ch.frequency_hz, ch.passband, center, rate, complex_iq)]
+
+    def _rec_names(self, chans: list[_Channel]) -> str:
         out = []
-        for r in self._recs.values():
-            ch = r.channel
-            if ch.receiver != rt.id:
-                continue
-            if center is None or rate is None or receiver_mode_problem(ch.mode, rate, complex_iq) or \
-                    span_problem(ch.mode, ch.frequency_hz, center, rate, ch.passband):
-                out.append(r)
-        return out
+        for ch in chans:
+            r = self._rec_by_channel.get(ch.id)
+            who = r.owner if r else "starting"
+            out.append(f"{r.id if r else ch.id} ({ch.frequency_hz} Hz {ch.mode}, {who})")
+        return ", ".join(out)
 
     @staticmethod
     def _take_gen(ch: _Channel, worker_gen: int, *, new_worker: bool = False) -> None:
@@ -803,6 +826,14 @@ class ControlCore:
         rt = self._receiver(a.receiver)
         passband = tuple(a.passband_hz) if a.passband_hz is not None else None
         offset = self._check_channel_fits(rt, a.mode, a.frequency_hz, passband)
+        # A retune already queued or running that this recording would not survive: refuse now,
+        # rather than start a recording the retune then ends without anyone confirming it.
+        center, rate, complex_iq = self._capture_now(rt)
+        for c, r in rt.pending_captures:
+            center, rate = (c if c is not None else center), (r if r is not None else rate)
+            if self._cannot_keep(a.mode, a.frequency_hz, passband, center, rate, complex_iq):
+                raise Rejected(ErrorCode.E_BUSY, f"a pending retune (centre {center} Hz, {rate} S/s) would not "
+                                                 f"cover {a.frequency_hz} Hz; start the recording after it completes")
         mine = sum(1 for r in self._recs.values() if r.owner == s.principal.user)
         if mine >= MAX_RECORDINGS_PER_PRINCIPAL:
             raise Rejected(ErrorCode.E_BUSY, f"already {mine} recordings running (limit {MAX_RECORDINGS_PER_PRINCIPAL})")
