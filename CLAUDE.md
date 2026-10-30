@@ -78,6 +78,11 @@ invent features, or weaken explicit requirements unless Adam asks.
   per 384k channel on the Optiplex (about half the cloud CPU's speed). WWV 10 MHz hum: likely the
   antenna/RF (Adam, 2026-10-30; also faint on OWRX): recheck with the LZ1AQ loop, with the H3 sweep.
   (Retunes now warn before ending an active recording: Adam, 2026-10-28.)
+  M1 close-out: B2 needs real clips for LSB/CW/WFM/MW-AM (`tools/b2/make_clips.py` cuts them from
+  the Window 1 recordings, no hardware) and NFM (needs a window); B10 needs a fresh
+  `tools/coexist_check.py trial`. M2 hardware (Adam, 2026-10-30): an RX888 MkII is on its way and
+  will replace the Airspy as the primary SDR on the Optiplex; the SDRplay is remote only (a site
+  about 50 miles away), so SDRplay support means a remote receiver, not a local USB device.
   M1 branches: `m1/<topic>`.
 - Each block: branch `m0/<topic>` → PR → CI green → merge. Keep PRs reviewable.
 - Two Claude sessions may work on this repo: a cloud session (no LAN access)
