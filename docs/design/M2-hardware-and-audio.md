@@ -1,6 +1,7 @@
 # Milestone 2 — Hardware and audio: design note
 
-Status: **proposed, 2026-10-31**, for Adam's approval (§7).
+Status: **approved by Adam, 2026-10-31 19:48 EDT** ("Yes to all": §7 items 1, 2, 3, 4 and 6;
+item 5, the project licence, stays open: nothing in M2 needs it before backend B).
 Scope source: outline §12 (Milestone 2), §3, §4, §5, §11, §13. Inputs: Adam's hardware facts
 (2026-10-30/31), the PhantomSDR-Plus assessment (`phantomsdr-plus-assessment-2026-10-31.md`) and
 the M1 CPU split (`docs/ops/cpu-split-2026-10-30.md`).
