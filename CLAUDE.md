@@ -87,7 +87,14 @@ invent features, or weaken explicit requirements unless Adam asks.
   second installation of this service on that host with a local USB device, under the same
   host rules as the Optiplex (OWRX+ keeps running there too). Users: Adam, a partner doing
   VHF/UHF/HF work, and a few public listeners.
-  M1 branches: `m1/<topic>`.
+  Since 2026-10-31 on the Optiplex: the RX888 MkII (serial 0009060505481B1E, USB 3) is the only
+  SDR; Adam runs **PhantomSDR-Plus** on it publicly (`phantomsdr-receiver.service`, port 8073; its
+  DRM helper uses **8075**, our port) and has disabled OWRX+. Treat PhantomSDR like OWRX: never
+  stop, reconfigure or edit it; for our windows Adam stops it. PhantomSDR-Plus is **not forked**
+  (`docs/design/phantomsdr-plus-assessment-2026-10-31.md`, Adam deferred, 2026-10-31); its code
+  stays off-limits (GPL-3 + attribution terms). M2 design proposed:
+  `docs/design/M2-hardware-and-audio.md` (awaiting Adam's decisions in §7).
+  M1 branches: `m1/<topic>`; M2 branches: `m2/<topic>`.
 - Each block: branch `m0/<topic>` → PR → CI green → merge. Keep PRs reviewable.
 - Two Claude sessions may work on this repo: a cloud session (no LAN access)
   and a local session on the Optiplex (as `k2dev`). Check open PRs and branches
