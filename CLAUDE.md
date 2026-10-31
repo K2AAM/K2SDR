@@ -81,8 +81,12 @@ invent features, or weaken explicit requirements unless Adam asks.
   M1 close-out: B2 needs real clips for LSB/CW/WFM/MW-AM (`tools/b2/make_clips.py` cuts them from
   the Window 1 recordings, no hardware) and NFM (needs a window); B10 needs a fresh
   `tools/coexist_check.py trial`. M2 hardware (Adam, 2026-10-30): an RX888 MkII is on its way and
-  will replace the Airspy as the primary SDR on the Optiplex; the SDRplay is remote only (a site
-  about 50 miles away), so SDRplay support means a remote receiver, not a local USB device.
+  will replace the Airspy as the primary SDR on the Optiplex. The SDRplay (RSPdx2, 3 antenna ports)
+  is at a remote site about 50 miles away, on Adam's own HP EliteDesk: Debian, OWRX+, public
+  access via a Cloudflare tunnel (like the Optiplex), SSH via Tailscale. So SDRplay support is a
+  second installation of this service on that host with a local USB device, under the same
+  host rules as the Optiplex (OWRX+ keeps running there too). Users: Adam, a partner doing
+  VHF/UHF/HF work, and a few public listeners.
   M1 branches: `m1/<topic>`.
 - Each block: branch `m0/<topic>` → PR → CI green → merge. Keep PRs reviewable.
 - Two Claude sessions may work on this repo: a cloud session (no LAN access)
