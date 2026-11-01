@@ -92,8 +92,8 @@ invent features, or weaken explicit requirements unless Adam asks.
   DRM helper uses **8075**, our port) and has disabled OWRX+. Treat PhantomSDR like OWRX: never
   stop, reconfigure or edit it; for our windows Adam stops it. PhantomSDR-Plus is **not forked**
   (`docs/design/phantomsdr-plus-assessment-2026-10-31.md`, Adam deferred, 2026-10-31); its code
-  stays off-limits (GPL-3 + attribution terms). M2 design proposed:
-  `docs/design/M2-hardware-and-audio.md` (awaiting Adam's decisions in §7).
+  stays off-limits (GPL-3 + attribution terms). M2 design:
+  `docs/design/M2-hardware-and-audio.md` (approved 2026-10-31; licence still open).
   M1 branches: `m1/<topic>`; M2 branches: `m2/<topic>`.
 - Each block: branch `m0/<topic>` → PR → CI green → merge. Keep PRs reviewable.
 - Two Claude sessions may work on this repo: a cloud session (no LAN access)

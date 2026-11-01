@@ -70,6 +70,16 @@ Versions above are what `debian:trixie` installed in CI on 2026-10-27 (CI report
 the "Runtime packages" annotation; `tools/check_dsp_deps.py` records the worker's `ldd` closure).
 Confirmed identical on the Optiplex (Adam, 2026-10-27, `dpkg-query -W libairspyhf1 libusb-1.0-0 libudev1 libcap2`).
 
+## M2 RX888 MkII (Window R1 tooling; backend A)
+
+| Component | Version | License | Source |
+| --- | --- | --- | --- |
+| rx888_stream | commit `262ab9166810bd6b021ff9a5868ff7739525cc7a` (2026-05-27), built by `tools/rx888/build_rx888_stream.sh` | GPL-3.0 | https://github.com/rhgndf/rx888_stream — run as a **separate process** (its stdout read through a pipe); never linked into or copied into our code. Not redistributed by this repository |
+| RX888 FX3 firmware image `SDDC_FX3.img` | as shipped in that commit, sha256 `824c575fd00ef0faa0c099ee013c6b8c19ec735bd1e555651c49273fa6b30ff2` (checked by the build script) | **not stated** in rx888_stream; origin presumably the ExtIO_sddc project. To be verified before backend B ships or loads it ourselves | loaded into the device by rx888_stream at start |
+| Rust toolchain (rustc, cargo) | user-installed via rustup on the build host | Apache-2.0 / MIT | build-time only, for rx888_stream |
+
+`tools/rx888/mock_rx888_stream.py` (tests) is our own code and talks to no hardware.
+
 ## DSP (worker; M1)
 
 | Component | Version | License | Source |

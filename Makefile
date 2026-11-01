@@ -3,7 +3,7 @@ UV      ?= uv
 PY      := $(UV) run --project control --frozen
 SCHEMA  := protocol/schema/control-v1.json
 
-.PHONY: web web-test help sync liquid dsp-deps dsp-bench worker worker-san probe test test-a1 test-worker-san schema schema-check fixtures fixtures-check ledger ledger-check run-dev check
+.PHONY: web web-test help sync liquid dsp-deps dsp-bench worker worker-san probe rx888-stream test test-a1 test-worker-san schema schema-check fixtures fixtures-check ledger ledger-check run-dev check
 help:
 	@echo "make sync          install pinned dev environment (control/uv.lock)"
 	@echo "make liquid        fetch (pinned, verified) and build liquid-dsp into build/third_party (no FFTW)"
@@ -34,6 +34,9 @@ liquid:
 
 $(LIQUID):
 	tools/build_liquid.sh
+
+rx888-stream:
+	tools/rx888/build_rx888_stream.sh
 
 worker: $(LIQUID)
 	cmake -S worker -B build/worker -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
